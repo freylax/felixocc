@@ -92,12 +92,36 @@ int main(int argc, const char **argv) {
   if( ec ) {
     std::cout << "occ dir not found:" << occDir << ", " << ec.message() << std::endl;
     exit(1);
-  } 
+  }
+  llvm::SmallString<256> occIncDir;
+  occIncDir.append( realOccDir);
+  sys::path::append( occIncDir, "include");
   std::stringstream iFlag;
-  iFlag << "-I" << std::string( realOccDir.str()) << "/include";
+  iFlag << "-I" << std::string( occIncDir.str());
   std::string flags[] = { iFlag.str(), "-std=c++0x" };
   FixedCompilationDatabase cdb( realOccDir.str(), flags);
-
+  std::map<std::string,std::list<std::string>> groupedFiles;
+  std::error_code EC;
+  Regex modre("([A-Za-z0-9]+)[_A-Za-z0-9]*\\.hxx");
+  for( sys::fs::directory_iterator i( occIncDir, EC);
+       i != sys::fs::directory_iterator(); i.increment( EC)) {
+    if (EC) {
+      llvm::errs() << "while traverse '" << occIncDir << "': "
+		   << EC.message() << '\n';
+      exit(1);
+    }
+    SmallVector<StringRef,2> m;
+    if( modre.match( sys::path::filename( i->path()),&m)) {
+      auto m_ = m.begin(); m_++; 
+      if( m_ != m.end()) {
+	groupedFiles[ m_->str()].push_back(i->path());
+      }
+    }
+  }
+  for( auto i = groupedFiles.begin(); i != groupedFiles.end(); ++i) {
+    std::cout << i->first << ":" << i->second.size() << std::endl;
+  }
+  exit(1);
   std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
   ClangTool Tool(cdb, files); //OptionsParser.getSourcePathList());
   
