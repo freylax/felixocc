@@ -50,29 +50,129 @@ DeclarationMatcher ClassMatcher =
 		/*.hasDeclContext(translationUnitDecl())*/
 		).bind("classDecl");
 
+class FType {
+public:
+  string name;
+  string inClass;
+  bool   builtin;
+};
+
+FType trType( const QualType& qt_) {
+  const QualType qt = qt_.getLocalUnqualifiedType();
+  FType t; t.builtin=false;
+  if(qt->isBuiltinType() || (qt->isPointerType() && qt->getPointeeType()->isBuiltinType())) {
+    t.name = qt.getAsString(); t.builtin = true;
+  } else if(qt->isRecordType()) {
+    const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
+    string rn = crd->getNameAsString();
+    cout << "tr(" << rn << ")" << endl;
+    if( rn.compare( "Standard_Real" ) == 0 ) { t.name = "double"; t.builtin = true; }
+    else if( rn.compare( "Standard_Integer" ) == 0 ) { t.name = "int"; t.builtin = true; }
+    else if( rn.compare( "Standard_Boolean" ) == 0 ) { t.name = "bool"; t.builtin = true; }
+    else {
+      string::size_type p = rn.find_first_of( '_');
+      if( p != string::npos ) {
+	t.inClass = rn.substr( 0, p);
+	t.name = rn.substr( p+1, string::npos);
+      } else {
+	t.name = rn;
+      }
+    }
+  } else {
+    t.name = qt.getAsString();
+    cout << "TR(" << t.name << ")" << endl;
+  }
+  return t;
+}
 
 struct TranslationUnit {
   string filePath;
   string fileName;
   string headerName;
-  set<string> dependentTypes;
-  set<string> providesTypes;
+  // dependent classes
+  set<string> dpClasses;
+  // dependent in class types 
+  set<string> dpTypes;
+  // provided (in class) types 
+  set<string> prTypes;
   stringstream def;
 };
 
-enum funKind { ctor, fun, proc, none};
+string inClassType( const FType& ft, const string& inClass, TranslationUnit& tu) {
+  if( ft.builtin || ft.inClass.empty()) return ft.name;
+  else { 
+    if ( ft.inClass == inClass ) {
+      tu.dpTypes.insert( ft.name);
+      return ft.name;
+    } else {
+      tu.dpClasses.insert( ft.inClass);
+      return inClass + "::" + ft.name;
+    }
+  }
+}
+
+list<string> args
+( const CXXMethodDecl* m, const string& inClass, TranslationUnit& tu )
+{
+  list<string> a;
+  for(unsigned int i=0; i < m->getNumParams(); i++) {
+    a.push_back( inClassType( trType ( m->parameters()[i]->getType()),
+			      inClass, tu));
+  }
+  return a;
+}
+
+void printArgs( const list<string>& args, stringstream& s) {
+  for( auto a = args.begin(); a != args.end(); ++a) {
+    if( a != args.begin()) s << " *";
+    s << " " << *a;
+  }
+}
+
+struct ClassContext { string inClass, ftype, ctype; };
+
+bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
+  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {
+    if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
+    tu.def << "  " << "ctor " << ct.ftype << ": ";
+    printArgs( args( m, ct.inClass, tu), tu.def);
+    tu.def << " = \"" << ct.ctype << "($a)\";" << endl;
+    return true;
+  } else return false;
+}
+
+bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
+  if ( !isa<CXXConstructorDecl>(m) && !isa<CXXDestructorDecl>(m) &&
+       ! m->isOverloadedOperator()) {
+    const QualType rt = m->getReturnType();
+    if ( rt->isVoidType() ) tu.def << "  proc "; else tu.def << "  fun ";
+    const string name = m->getNameAsString(); 
+    tu.def << name << ": ";
+    std::list<string> args_ = args( m, ct.inClass, tu);
+    // if not a static method then first arg is of type ftype
+    if( !m->isStatic()) args_.push_front( ct.ftype);
+    printArgs( args_, tu.def);
+    if ( !rt->isVoidType() ) // print return type
+      tu.def << " -> " << inClassType( trType( rt), ct.inClass, tu);
+    if( m->isStatic()) tu.def << name << "($a)\";" << endl;
+    else tu.def << "$1." << name << "($b)\";" << endl;
+    return true;
+  } else return false;
+}
+ 
 
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
   list<TranslationUnit> tus;
   TranslationUnit tu;
+  string targetClass;
 public :
-  ClassWriter () {} //: str(""), os( str) {}
+  ClassWriter ( const string& targetClass_):targetClass( targetClass_) {} //: str(""), os( str) {}
   virtual void onStartOfTranslationUnit() {
     std::cout << "startOfTU" << std::endl;
     tu = TranslationUnit();
   }
-
+  
   virtual void run(const MatchFinder::MatchResult &Result) {
     if( tu.filePath.empty()) {
       clang::SourceManager* sm = Result.SourceManager;
@@ -85,65 +185,32 @@ public :
     }
     if (const CXXRecordDecl *RD = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl")) {
       //std::cout << "run" << std::endl;
-      string ctype = RD->getDeclName().getAsString();
-      string ftype = ctype;
-      cout << ftype;
+      ClassContext ct; ct.inClass = targetClass;
+      ct.ctype = RD->getDeclName().getAsString();
+      string::size_type p = ct.ctype.find_first_of( '_');
+      if( p != string::npos ) {
+	const string inClass = ct.ctype.substr( 0, p);
+	if( ct.inClass != inClass ) {
+	  cout << "Error, found definition for " << inClass << ", but required class is " << ct.inClass
+	       << "! for type " << ct.ctype << " in file " << tu.fileName << endl;
+	  return;
+	}
+	ct.ftype = ct.ctype.substr( p+1, string::npos);
+      } else {
+	cout << "Warning, found unclassified type " << ct.ctype << " in file " << tu.fileName << endl; 
+	ct.ftype = ct.ctype;
+      }      
+      cout << ct.ftype;
       if (RD->isCompleteDefinition()) {
 	cout << "*";
-	tu.providesTypes.insert( ftype);
-	tu.def << "  " << "type " << ftype << " = \" << ctype << \" requires " << tu.headerName << ";" << endl;
+	tu.prTypes.insert( ct.ftype);
+	tu.def << "  " << "type " << ct.ftype << " = \"" << ct.ctype << "\" requires " << tu.headerName << ";" << endl;
 	// methods
-	for( DeclContext::specific_decl_iterator<CXXMethodDecl> m = RD->method_begin(); m != RD->method_end(); ++m) {
-	  string fun,name,ret;
-	  std::list< string> args;
-	  bool isCtor = false;
-	  bool isMemberFun = false;
-	  // ignore operator overloading
-	  if( m->isOverloadedOperator()) continue;
-	  // ctor
-	  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m.operator*())) {
-	    if(c->isCopyConstructor() || c->isMoveConstructor()) continue;
-	    fun = "ctor"; name = ftype; isCtor=true;
-	  } else if (isa<CXXDestructorDecl>(m.operator*())) { continue;
-	  } else {
-	    const QualType qt = m->getReturnType();
-	    if (qt->isVoidType()) {
-	      fun = "proc"; 
-	    } else {
-	      fun = "fun";
-	      ret = qt.getAsString();
-	    }
-	    name = m->getNameAsString();
-	    // if not a static method then first arg is of type ftype
-	    if( !m->isStatic()) {
-	      args.push_back( ftype);
-	      isMemberFun = true;
-	    }
-	  }
-	  for(unsigned int i=0; i < m->getNumParams(); i++) {
-	    const QualType qt = m->parameters()[i]->getType();
-	    args.push_back( qt.getAsString());
-	  }
-	  tu.def << "  " << fun << name << ": ";
-	  for( auto a = args.begin(); a != args.end(); ++a) {
-	    if( a != args.begin()) tu.def << " *";
-	    tu.def << " " << *a;
-	  }
-	  if( !ret.empty())
-	    tu.def << " -> " << ret;
-	  tu.def << " = \"";
-	  if( isCtor) tu.def << ctype << "($a)";
-	  else if( isMemberFun) tu.def << "$1." << name << "($b)";
-	  else tu.def << name << "($a)";
-	  tu.def << "\";" << endl;
+	for( DeclContext::specific_decl_iterator<CXXMethodDecl> mi = RD->method_begin(); mi != RD->method_end(); ++mi) {
+	  const CXXMethodDecl* m = mi.operator*();
+	  trCtor( m, ct, tu);
+	  trMemberFct( m, ct, tu);
 	}
-	// std::cout << "completeDefinition" << std::endl; 
-	//RD->dump();
-	//outputFilePath.clear();
-	//outputFilePath.append( realOutputDir);
-	//sys::path::append( outputFilePath, RD->getDeclName().getAsString());
-	//outputFilePath.append( ".flx");
-	//std::cout << "ofp:" << std::string( outputFilePath.str()) << std::endl;
       }
       cout << endl;
     }
@@ -226,7 +293,7 @@ int main(int argc, const char **argv) {
     } 
   }
      
-  ClassWriter Writer;
+  ClassWriter Writer("gp");
   MatchFinder Finder;
   Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource,
 			     ClassMatcher
@@ -235,3 +302,10 @@ int main(int argc, const char **argv) {
   
   return Tool.run(newFrontendActionFactory( &Finder).get());
 }
+	// std::cout << "completeDefinition" << std::endl; 
+	//RD->dump();
+	//outputFilePath.clear();
+	//outputFilePath.append( realOutputDir);
+	//sys::path::append( outputFilePath, RD->getDeclName().getAsString());
+	//outputFilePath.append( ".flx");
+	//std::cout << "ofp:" << std::string( outputFilePath.str()) << std::endl;
