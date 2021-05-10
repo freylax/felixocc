@@ -55,35 +55,62 @@ public:
   string name;
   string inClass;
   bool   builtin;
+  bool   pointer;
 };
 
 FType trType( const QualType& qt_) {
-  const QualType qt = qt_.getLocalUnqualifiedType();
-  FType t; t.builtin=false;
-  if(qt->isBuiltinType() || (qt->isPointerType() && qt->getPointeeType()->isBuiltinType())) {
+  QualType qt = qt_;
+  FType t; t.builtin=false; t.pointer=false;
+  if( qt->isReferenceType() || qt->isPointerType()) {
+    qt = qt->getPointeeType();
+    if( !qt.isLocalConstQualified() ) t.pointer = true; 
+  }
+  if( qt.isLocalConstQualified()) qt.removeLocalConst();
+  if( qt->isTypedefNameType()){
+    string n = qt.getAsString();
+    if( n == "Standard_Real" )
+      { t.name = "double"; t.builtin = true; return t;}
+    else if( n == "Standard_Integer" )
+      { t.name = "int"; t.builtin = true; return t;}
+    else if( n == "Standard_Boolean" )
+      { t.name = "bool"; t.builtin = true; return t;}
+    else if( n == "Standard_OStream" )
+      { t.name = "ostream"; t.inClass = "std"; return t; }
+    else if( n == "Standard_SStream" )
+      { t.name = "stringstream"; t.inClass = "std"; return t; }
+    
+    //const TypedefType* tt = qt->getAs<TypedefType>();
+    //qt = tt->desugar();
+  }
+  if(qt->isBuiltinType() ) {
     t.name = qt.getAsString(); t.builtin = true;
   } else if(qt->isRecordType()) {
     const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
     string rn = crd->getNameAsString();
-    cout << "tr(" << rn << ")" << endl;
-    if( rn.compare( "Standard_Real" ) == 0 ) { t.name = "double"; t.builtin = true; }
-    else if( rn.compare( "Standard_Integer" ) == 0 ) { t.name = "int"; t.builtin = true; }
-    else if( rn.compare( "Standard_Boolean" ) == 0 ) { t.name = "bool"; t.builtin = true; }
-    else {
-      string::size_type p = rn.find_first_of( '_');
-      if( p != string::npos ) {
-	t.inClass = rn.substr( 0, p);
-	t.name = rn.substr( p+1, string::npos);
-      } else {
-	t.name = rn;
-      }
+    string::size_type p = rn.find_first_of( '_');
+    if( p != string::npos ) {
+      t.inClass = rn.substr( 0, p);
+      t.name = rn.substr( p+1, string::npos);
+    } else {
+      t.name = rn;
     }
   } else {
     t.name = qt.getAsString();
-    cout << "TR(" << t.name << ")" << endl;
   }
   return t;
 }
+
+FType trType( const QualType& qt, set<string>& log) {
+  stringstream l; l << "trType(" << qt.getAsString() << ") -> ";
+  const FType t = trType( qt);
+  if( !t.inClass.empty()) l << t.inClass << "::";
+  l << t.name;
+  if( t.pointer) l <<"&";
+  if( t.builtin) l <<" b";
+  log.insert( l.str());
+  return t;
+}
+
 
 struct TranslationUnit {
   string filePath;
@@ -96,17 +123,20 @@ struct TranslationUnit {
   // provided (in class) types 
   set<string> prTypes;
   stringstream def;
+  set<string> trTypeLog;
 };
 
 string inClassType( const FType& ft, const string& inClass, TranslationUnit& tu) {
-  if( ft.builtin || ft.inClass.empty()) return ft.name;
+  string name = ft.name;
+  if( ft.pointer) name += "&";
+  if( ft.builtin || ft.inClass.empty()) return name;
   else { 
     if ( ft.inClass == inClass ) {
       tu.dpTypes.insert( ft.name);
-      return ft.name;
+      return name;
     } else {
       tu.dpClasses.insert( ft.inClass);
-      return inClass + "::" + ft.name;
+      return ft.inClass + "::" + name;
     }
   }
 }
@@ -116,27 +146,31 @@ list<string> args
 {
   list<string> a;
   for(unsigned int i=0; i < m->getNumParams(); i++) {
-    a.push_back( inClassType( trType ( m->parameters()[i]->getType()),
+    a.push_back( inClassType( trType ( m->parameters()[i]->getType(), tu.trTypeLog),
 			      inClass, tu));
   }
   return a;
 }
 
 void printArgs( const list<string>& args, stringstream& s) {
+  if( args.empty()) s << "1";
   for( auto a = args.begin(); a != args.end(); ++a) {
-    if( a != args.begin()) s << " *";
-    s << " " << *a;
+    if( a != args.begin()) s << " * ";
+    s << *a;
   }
 }
 
 struct ClassContext { string inClass, ftype, ctype; };
 
 bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
-  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {
+  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
     if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
-    tu.def << "  " << "ctor " << ct.ftype << ": ";
-    printArgs( args( m, ct.inClass, tu), tu.def);
-    tu.def << " = \"" << ct.ctype << "($a)\";" << endl;
+    auto& d = tu.def;
+    d << "  " << "ctor " << ct.ftype << ": ";
+    auto args_ = args( m, ct.inClass, tu); 
+    printArgs( args_, d);
+    d << " = \"" << ct.ctype << "("; if( !args_.empty()) d << "$a";
+    d << ")\";" << endl;
     return true;
   } else return false;
 }
@@ -144,18 +178,26 @@ bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu
 bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if ( !isa<CXXConstructorDecl>(m) && !isa<CXXDestructorDecl>(m) &&
        ! m->isOverloadedOperator()) {
+    auto& d = tu.def;
     const QualType rt = m->getReturnType();
-    if ( rt->isVoidType() ) tu.def << "  proc "; else tu.def << "  fun ";
+    if ( rt->isVoidType() ) d << "  proc "; else d << "  fun ";
     const string name = m->getNameAsString(); 
-    tu.def << name << ": ";
+    d << name << ": ";
     std::list<string> args_ = args( m, ct.inClass, tu);
     // if not a static method then first arg is of type ftype
     if( !m->isStatic()) args_.push_front( ct.ftype);
-    printArgs( args_, tu.def);
+    printArgs( args_, d);
     if ( !rt->isVoidType() ) // print return type
-      tu.def << " -> " << inClassType( trType( rt), ct.inClass, tu);
-    if( m->isStatic()) tu.def << name << "($a)\";" << endl;
-    else tu.def << "$1." << name << "($b)\";" << endl;
+      d << " -> " << inClassType( trType( rt, tu.trTypeLog), ct.inClass, tu);
+    d << " = \""; 
+    if( m->isStatic()) {
+      d << name << "("; if( !args_.empty()) d << "$a";
+      d << ")\";" << endl;
+    }
+    else {
+      d << "$1." << name << "("; if( args_.size()>1) d << "$b";
+      d << ")\";" << endl;
+    }
     return true;
   } else return false;
 }
@@ -218,6 +260,10 @@ public :
   virtual void onEndOfTranslationUnit() {
     std::cout << "endOfTU:" /*<< std::string( outputFilePath.str()) */ << std::endl;
     cout << tu.def.str() << endl;
+    cout << "---- trType log ----" << endl;
+    for( auto i = tu.trTypeLog.begin(); i != tu.trTypeLog.end(); ++i) {
+      cout << *i << endl;
+    }
     // Open the output file
     //std::error_code EC;
     //llvm::raw_fd_ostream HOS(outputFilePath, EC, llvm::sys::fs::F_None);
