@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <unistd.h>
 #include "llvm/Support/Path.h"
 
@@ -58,6 +59,17 @@ public:
   bool   pointer;
 };
 
+
+void setClassAndName( const string& n, FType& t) {
+  string::size_type p = n.find_first_of( '_');
+  if( p != string::npos ) {
+    t.inClass = n.substr( 0, p);
+    t.name = n.substr( p+1, string::npos);
+  } else {
+    t.name = n;
+  }
+}
+
 FType trType( const QualType& qt_) {
   QualType qt = qt_;
   FType t; t.builtin=false; t.pointer=false;
@@ -67,33 +79,26 @@ FType trType( const QualType& qt_) {
   }
   if( qt.isLocalConstQualified()) qt.removeLocalConst();
   if( qt->isTypedefNameType()){
-    string n = qt.getAsString();
-    if( n == "Standard_Real" )
-      { t.name = "double"; t.builtin = true; return t;}
-    else if( n == "Standard_Integer" )
-      { t.name = "int"; t.builtin = true; return t;}
-    else if( n == "Standard_Boolean" )
-      { t.name = "bool"; t.builtin = true; return t;}
-    else if( n == "Standard_OStream" )
-      { t.name = "ostream"; t.inClass = "std"; return t; }
-    else if( n == "Standard_SStream" )
-      { t.name = "stringstream"; t.inClass = "std"; return t; }
+    setClassAndName( qt.getAsString(), t);
+  //   string n = qt.getAsString();
+  //   if( n == "Standard_Real" )
+  //     { t.name = "double"; t.builtin = true; return t;}
+  //   else if( n == "Standard_Integer" )
+  //     { t.name = "int"; t.builtin = true; return t;}
+  //   else if( n == "Standard_Boolean" )
+  //     { t.name = "bool"; t.builtin = true; return t;}
+  //   else if( n == "Standard_OStream" )
+  //     { t.name = "ostream"; t.inClass = "std"; return t; }
+  //   else if( n == "Standard_SStream" )
+  //     { t.name = "stringstream"; t.inClass = "std"; return t; }
     
-    //const TypedefType* tt = qt->getAs<TypedefType>();
-    //qt = tt->desugar();
-  }
-  if(qt->isBuiltinType() ) {
+  //   //const TypedefType* tt = qt->getAs<TypedefType>();
+  //   //qt = tt->desugar();
+  } else if( qt->isBuiltinType() ) {
     t.name = qt.getAsString(); t.builtin = true;
-  } else if(qt->isRecordType()) {
+  } else if( qt->isRecordType()) {
     const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
-    string rn = crd->getNameAsString();
-    string::size_type p = rn.find_first_of( '_');
-    if( p != string::npos ) {
-      t.inClass = rn.substr( 0, p);
-      t.name = rn.substr( p+1, string::npos);
-    } else {
-      t.name = rn;
-    }
+    setClassAndName( crd->getNameAsString(), t);
   } else {
     t.name = qt.getAsString();
   }
@@ -111,7 +116,6 @@ FType trType( const QualType& qt, set<string>& log) {
   return t;
 }
 
-
 struct TranslationUnit {
   string filePath;
   string fileName;
@@ -126,28 +130,39 @@ struct TranslationUnit {
   set<string> trTypeLog;
 };
 
-string inClassType( const FType& ft, const string& inClass, TranslationUnit& tu) {
+bool containsAtLeastOneOf(const set<string>& u,const set<string>& v) {
+  auto i = u.begin();
+  while( i != u.end() && v.find( *i) == v.end()) ++i;
+  return i != u.end();
+}
+  
+string inClassType( const FType& ft, const string& inClass, const set<string>& openClasses,
+		    TranslationUnit& tu) {
   string name = ft.name;
   if( ft.pointer) name += "&";
   if( ft.builtin || ft.inClass.empty()) return name;
   else { 
     if ( ft.inClass == inClass ) {
-      tu.dpTypes.insert( ft.name);
+      if( tu.prTypes.find( ft.name) == tu.prTypes.end())
+	tu.dpTypes.insert( ft.name);
       return name;
     } else {
       tu.dpClasses.insert( ft.inClass);
-      return ft.inClass + "::" + name;
+      if( openClasses.find( ft.inClass) != openClasses.end())
+	return name;
+      else
+	return ft.inClass + "::" + name;
     }
   }
 }
 
 list<string> args
-( const CXXMethodDecl* m, const string& inClass, TranslationUnit& tu )
+( const CXXMethodDecl* m, const string& inClass, const set<string>& openClasses, TranslationUnit& tu )
 {
   list<string> a;
   for(unsigned int i=0; i < m->getNumParams(); i++) {
     a.push_back( inClassType( trType ( m->parameters()[i]->getType(), tu.trTypeLog),
-			      inClass, tu));
+			      inClass, openClasses, tu));
   }
   return a;
 }
@@ -160,14 +175,23 @@ void printArgs( const list<string>& args, stringstream& s) {
   }
 }
 
-struct ClassContext { string inClass, ftype, ctype; };
+class ClassContext {
+public:
+  const string& inClass;
+  const set<string>& openClasses;
+  string ftype;
+  string ctype;
+  ClassContext( const string& inClass_,
+		const set<string>& openClasses_) :
+    inClass( inClass_), openClasses( openClasses_) {}
+};
 
 bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
     if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
     auto& d = tu.def;
     d << "  " << "ctor " << ct.ftype << ": ";
-    auto args_ = args( m, ct.inClass, tu); 
+    auto args_ = args( m, ct.inClass, ct.openClasses, tu); 
     printArgs( args_, d);
     d << " = \"" << ct.ctype << "("; if( !args_.empty()) d << "$a";
     d << ")\";" << endl;
@@ -183,12 +207,12 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     if ( rt->isVoidType() ) d << "  proc "; else d << "  fun ";
     const string name = m->getNameAsString(); 
     d << name << ": ";
-    std::list<string> args_ = args( m, ct.inClass, tu);
+    std::list<string> args_ = args( m, ct.inClass, ct.openClasses, tu);
     // if not a static method then first arg is of type ftype
     if( !m->isStatic()) args_.push_front( ct.ftype);
     printArgs( args_, d);
     if ( !rt->isVoidType() ) // print return type
-      d << " -> " << inClassType( trType( rt, tu.trTypeLog), ct.inClass, tu);
+      d << " -> " << inClassType( trType( rt, tu.trTypeLog), ct.inClass, ct.openClasses, tu);
     d << " = \""; 
     if( m->isStatic()) {
       d << name << "("; if( !args_.empty()) d << "$a";
@@ -205,78 +229,129 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
-  list<TranslationUnit> tus;
-  TranslationUnit tu;
+  list<shared_ptr<TranslationUnit>> tus;
+  shared_ptr<TranslationUnit> tu;
   string targetClass;
+  string package;
+  set<string> openClasses;
+  set<string> dpClasses;
 public :
-  ClassWriter ( const string& targetClass_):targetClass( targetClass_) {} //: str(""), os( str) {}
+  ClassWriter ( const string& targetClass_, const string& package_,
+		const set<string>& openClasses_)
+    :targetClass( targetClass_),
+     package(package_), openClasses( openClasses_)
+  {} //: str(""), os( str) {}
   virtual void onStartOfTranslationUnit() {
-    std::cout << "startOfTU" << std::endl;
-    tu = TranslationUnit();
+    //std::cout << "startOfTU" << std::endl;
+    tu = shared_ptr<TranslationUnit>( new TranslationUnit());
   }
   
   virtual void run(const MatchFinder::MatchResult &Result) {
-    if( tu.filePath.empty()) {
+    if( tu->filePath.empty()) {
       clang::SourceManager* sm = Result.SourceManager;
       auto fp = sm->getNonBuiltinFilenameForID( sm->getMainFileID());
       if( fp.hasValue()) {
-	tu.filePath = fp.getValue().str();
-	tu.fileName = sys::path::filename( tu.filePath).str();
-	tu.headerName = tu.fileName; replace( tu.headerName.begin(), tu.headerName.end(), '.', '_'); 
+	tu->filePath = fp.getValue().str();
+	tu->fileName = sys::path::filename( tu->filePath).str();
+	tu->headerName = tu->fileName; replace( tu->headerName.begin(), tu->headerName.end(), '.', '_');
+	cout << tu->fileName << endl;
       }      
     }
     if (const CXXRecordDecl *RD = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl")) {
       //std::cout << "run" << std::endl;
-      ClassContext ct; ct.inClass = targetClass;
+      ClassContext ct( targetClass, openClasses);
       ct.ctype = RD->getDeclName().getAsString();
       string::size_type p = ct.ctype.find_first_of( '_');
       if( p != string::npos ) {
 	const string inClass = ct.ctype.substr( 0, p);
 	if( ct.inClass != inClass ) {
-	  cout << "Error, found definition for " << inClass << ", but required class is " << ct.inClass
-	       << "! for type " << ct.ctype << " in file " << tu.fileName << endl;
+	  //cout << "Error, found definition for " << inClass << ", but required class is " << ct.inClass
+	  //     << "! for type " << ct.ctype << " in file " << tu->fileName << endl;
 	  return;
 	}
 	ct.ftype = ct.ctype.substr( p+1, string::npos);
       } else {
-	cout << "Warning, found unclassified type " << ct.ctype << " in file " << tu.fileName << endl; 
+	//cout << "Warning, found unclassified type " << ct.ctype << " in file " << tu->fileName << endl; 
 	ct.ftype = ct.ctype;
       }      
-      cout << ct.ftype;
+      //cout << ct.ftype;
       if (RD->isCompleteDefinition()) {
-	cout << "*";
-	tu.prTypes.insert( ct.ftype);
-	tu.def << "  " << "type " << ct.ftype << " = \"" << ct.ctype << "\" requires " << tu.headerName << ";" << endl;
+	//cout << "*";
+	tu->prTypes.insert( ct.ftype);
+	tu->def << "  " << "type " << ct.ftype << " = \"" << ct.ctype << "\" requires " << tu->headerName << ";" << endl;
 	// methods
 	for( DeclContext::specific_decl_iterator<CXXMethodDecl> mi = RD->method_begin(); mi != RD->method_end(); ++mi) {
 	  const CXXMethodDecl* m = mi.operator*();
-	  trCtor( m, ct, tu);
-	  trMemberFct( m, ct, tu);
+	  trCtor( m, ct, *tu);
+	  trMemberFct( m, ct, *tu);
 	}
       }
-      cout << endl;
+      //cout << endl;
     }
   }
   virtual void onEndOfTranslationUnit() {
-    std::cout << "endOfTU:" /*<< std::string( outputFilePath.str()) */ << std::endl;
-    cout << tu.def.str() << endl;
-    cout << "---- trType log ----" << endl;
-    for( auto i = tu.trTypeLog.begin(); i != tu.trTypeLog.end(); ++i) {
-      cout << *i << endl;
-    }
-    // Open the output file
-    //std::error_code EC;
-    //llvm::raw_fd_ostream HOS(outputFilePath, EC, llvm::sys::fs::F_None);
-    //if (EC) {
-    //  llvm::errs() << "while opening '" << outputFilePath << "': "
-    //		   << EC.message() << '\n';
-    //  exit(1);
+    //    std::cout << "endOfTU:" /*<< std::string( outputFilePath.str()) */ << std::endl;
+    //cout << tu->def.str() << endl;
+    //cout << "---- trType log ----" << endl;
+    //for( auto i = tu->trTypeLog.begin(); i != tu->trTypeLog.end(); ++i) {
+    //  cout << *i << endl;
     //}
+    for( auto i = tu->dpClasses.begin(); i != tu->dpClasses.end(); ++i) {
+      dpClasses.insert( *i);
+    }
+    auto i = tus.begin();
+    for( ; i != tus.end(); ++i) {
+      if( containsAtLeastOneOf( tu->prTypes, (*i)->dpTypes)) {
+	tus.insert( i, tu); break;
+      }
+    }
+    if( i==tus.end()) tus.push_back( tu);
   }
-  //private:
-  //std::string str;
-  //llvm::raw_string_ostream os;
-  //llvm::SmallString<256> outputFilePath;
+
+  void writeFile() {
+    llvm::SmallString<256> outputFilePath;
+    outputFilePath.append( realOutputDir);
+    sys::path::append( outputFilePath, targetClass);
+    outputFilePath.append( ".flx");
+    cout << "output file:" << string( outputFilePath.str()) << endl;        
+    // Open the output file
+    ofstream os( outputFilePath.c_str());
+    for( auto i = tus.begin(); i != tus.end(); ++i) {
+      const TranslationUnit& tu = *(*i);
+      os << "// --- " << tu.fileName << " ---" << endl;
+      os << "// provides: ";
+      for( auto j = tu.prTypes.begin(); j != tu.prTypes.end(); ++j) {
+	if( j != tu.prTypes.begin()) os << ", ";
+	os << *j;
+      }
+      os << endl;
+      os << "// requires: ";
+      for( auto j = tu.dpTypes.begin(); j != tu.dpTypes.end(); ++j) {
+	if( j != tu.dpTypes.begin()) os << ", ";
+	os << *j;
+      }
+      os << endl;
+    }
+    os << "---------------------------------------------------------" << endl;
+    for( auto i = dpClasses.begin(); i != dpClasses.end(); ++i) {
+      os << "include \"" << *i << "\";" << endl;
+    }
+    for( auto i = tus.begin(); i != tus.end(); ++i) {
+      if( !(*i)->headerName.empty())
+	os << "header " << (*i)->headerName << " = '#include \"" << (*i)->fileName << "\"';" << endl;
+    }
+    os << "class " << targetClass << " {" << endl;
+    os << "  requires package \"" << package << "\";" << endl;
+    for( auto i = openClasses.begin(); i != openClasses.end(); ++i) {
+      os << "  open " << *i << ";" << endl;
+    }
+    for( auto i = tus.begin(); i != tus.end(); ++i) {
+      os << "// --- " << (*i)->fileName << " ---" << endl;
+      os << (*i)->def.str();
+    }
+    os << "};" << endl;
+    os.close();
+  }
 };
 
 
@@ -319,12 +394,12 @@ int main(int argc, const char **argv) {
   //  std::cout << i->first << ":" << i->second.size() << std::endl;
   // }
   //exit(1);
-  std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
-  //auto& files_ = groupedFiles["gp"];
-  //std::vector<std::string> files( files_.size()); int j=0;
-  //for( auto i = files_.begin(); i != files_.end(); ++i) {
-  // files[j++] = *i;
-  //}
+  //  std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
+  auto& files_ = groupedFiles["gp"];
+  std::vector<std::string> files( files_.size()); int j=0;
+  for( auto i = files_.begin(); i != files_.end(); ++i) {
+   files[j++] = *i;
+  }
   ClangTool Tool(cdb, files); //OptionsParser.getSourcePathList());
   {
     char cwd[256]; getcwd(cwd, 256); 
@@ -339,19 +414,14 @@ int main(int argc, const char **argv) {
     } 
   }
      
-  ClassWriter Writer("gp");
+  ClassWriter Writer("gp","TKMath", set<string>({"Standard"}));
   MatchFinder Finder;
   Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource,
 			     ClassMatcher
 			     ), &Writer);
 
   
-  return Tool.run(newFrontendActionFactory( &Finder).get());
+  int result = Tool.run(newFrontendActionFactory( &Finder).get());
+  if( result != 0) cout << "Error during Tool run" << endl;
+  Writer.writeFile();
 }
-	// std::cout << "completeDefinition" << std::endl; 
-	//RD->dump();
-	//outputFilePath.clear();
-	//outputFilePath.append( realOutputDir);
-	//sys::path::append( outputFilePath, RD->getDeclName().getAsString());
-	//outputFilePath.append( ".flx");
-	//std::cout << "ofp:" << std::string( outputFilePath.str()) << std::endl;
