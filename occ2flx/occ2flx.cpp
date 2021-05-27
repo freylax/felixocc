@@ -15,6 +15,7 @@
 #include "llvm/Support/Path.h"
 
 using namespace std;
+using namespace std::placeholders;
 using namespace llvm; 
 using namespace clang;
 using namespace clang::ast_matchers;
@@ -35,6 +36,12 @@ static cl::opt<std::string> outputDir
   cl::value_desc("output directory"),
   cl::desc("Output directory where the generated files will be put"),
   cl::Required);
+
+static cl::opt<std::string> TargetClass
+( "c",
+  cl::value_desc("target class"),
+  cl::desc("the target class file which should be generated"),
+  cl::Optional);
 
 static llvm::SmallString<256> realOutputDir;
 static llvm::SmallString<256> realOccDir;
@@ -186,6 +193,11 @@ public:
     inClass( inClass_), openClasses( openClasses_) {}
 };
 
+void setType(const ClassContext& ct, TranslationUnit& tu) {
+  tu.prTypes.insert( ct.ftype);
+  tu.def << "  " << "type " << ct.ftype << " = \"" << ct.ctype << "\" requires " << tu.headerName << ";" << endl;
+}
+
 bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
     if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
@@ -225,22 +237,24 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     return true;
   } else return false;
 }
- 
+
+
+struct ClassTranslation {
+  string targetClass;
+  string package;
+  set<string> openClasses;
+  set<string> includes;
+  function<void( const ClassContext& ct, TranslationUnit& tu)> typeTr;
+  list<function<bool( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu)> > mfTr;
+};
 
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
   list<shared_ptr<TranslationUnit>> tus;
   shared_ptr<TranslationUnit> tu;
-  string targetClass;
-  string package;
-  set<string> openClasses;
-  set<string> dpClasses;
+  ClassTranslation ctr;
 public :
-  ClassWriter ( const string& targetClass_, const string& package_,
-		const set<string>& openClasses_)
-    :targetClass( targetClass_),
-     package(package_), openClasses( openClasses_)
-  {} //: str(""), os( str) {}
+  ClassWriter ( const ClassTranslation& ctr_) :ctr( ctr_) {}
   virtual void onStartOfTranslationUnit() {
     //std::cout << "startOfTU" << std::endl;
     tu = shared_ptr<TranslationUnit>( new TranslationUnit());
@@ -259,7 +273,7 @@ public :
     }
     if (const CXXRecordDecl *RD = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl")) {
       //std::cout << "run" << std::endl;
-      ClassContext ct( targetClass, openClasses);
+      ClassContext ct( ctr.targetClass, ctr.openClasses);
       ct.ctype = RD->getDeclName().getAsString();
       string::size_type p = ct.ctype.find_first_of( '_');
       if( p != string::npos ) {
@@ -277,13 +291,13 @@ public :
       //cout << ct.ftype;
       if (RD->isCompleteDefinition()) {
 	//cout << "*";
-	tu->prTypes.insert( ct.ftype);
-	tu->def << "  " << "type " << ct.ftype << " = \"" << ct.ctype << "\" requires " << tu->headerName << ";" << endl;
+	ctr.typeTr( ct, *tu);
 	// methods
 	for( DeclContext::specific_decl_iterator<CXXMethodDecl> mi = RD->method_begin(); mi != RD->method_end(); ++mi) {
 	  const CXXMethodDecl* m = mi.operator*();
-	  trCtor( m, ct, *tu);
-	  trMemberFct( m, ct, *tu);
+	  for( auto tr = ctr.mfTr.begin(); tr != ctr.mfTr.end(); ++tr) {
+	    if( (*tr)( m, ct, *tu)) break;
+	  }
 	}
       }
       //cout << endl;
@@ -297,7 +311,7 @@ public :
     //  cout << *i << endl;
     //}
     for( auto i = tu->dpClasses.begin(); i != tu->dpClasses.end(); ++i) {
-      dpClasses.insert( *i);
+      ctr.includes.insert( *i);
     }
     auto i = tus.begin();
     for( ; i != tus.end(); ++i) {
@@ -311,7 +325,7 @@ public :
   void writeFile() {
     llvm::SmallString<256> outputFilePath;
     outputFilePath.append( realOutputDir);
-    sys::path::append( outputFilePath, targetClass);
+    sys::path::append( outputFilePath, ctr.targetClass);
     outputFilePath.append( ".flx");
     cout << "output file:" << string( outputFilePath.str()) << endl;        
     // Open the output file
@@ -333,16 +347,16 @@ public :
       os << endl;
     }
     os << "---------------------------------------------------------" << endl;
-    for( auto i = dpClasses.begin(); i != dpClasses.end(); ++i) {
+    for( auto i = ctr.includes.begin(); i != ctr.includes.end(); ++i) {
       os << "include \"" << *i << "\";" << endl;
     }
     for( auto i = tus.begin(); i != tus.end(); ++i) {
       if( !(*i)->headerName.empty())
 	os << "header " << (*i)->headerName << " = '#include \"" << (*i)->fileName << "\"';" << endl;
     }
-    os << "class " << targetClass << " {" << endl;
-    os << "  requires package \"" << package << "\";" << endl;
-    for( auto i = openClasses.begin(); i != openClasses.end(); ++i) {
+    os << "class " << ctr.targetClass << " {" << endl;
+    os << "  requires package \"" << ctr.package << "\";" << endl;
+    for( auto i = ctr.openClasses.begin(); i != ctr.openClasses.end(); ++i) {
       os << "  open " << *i << ";" << endl;
     }
     for( auto i = tus.begin(); i != tus.end(); ++i) {
@@ -354,7 +368,19 @@ public :
   }
 };
 
+void setTypeInit(const ClassContext& ct, TranslationUnit& tu, const string& rType) {
+  setType( ct, tu);
+  tu.def << "  #init[" << ct.ftype << "," << rType << "];" << endl;
+}
 
+
+static list<ClassTranslation> classTranslations =
+  {
+    {"gp","TKMath",{"Standard"},{}
+     ,setType,{trCtor,trMemberFct}}
+    ,{"GC", "TKGeomBase",{"Standard"},{}
+      ,bind(setTypeInit,_1,_2,"Geom::TrimmedCurve"),{}}
+  };
 
 
 int main(int argc, const char **argv) {
@@ -395,17 +421,11 @@ int main(int argc, const char **argv) {
   // }
   //exit(1);
   //  std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
-  auto& files_ = groupedFiles["gp"];
-  std::vector<std::string> files( files_.size()); int j=0;
-  for( auto i = files_.begin(); i != files_.end(); ++i) {
-   files[j++] = *i;
-  }
-  ClangTool Tool(cdb, files); //OptionsParser.getSourcePathList());
   {
     char cwd[256]; getcwd(cwd, 256); 
     sys::fs::set_current_path( cwd);
     std::cout << "cwd:" << cwd << std::endl;
-  
+    
     ec = sys::fs::real_path( outputDir, realOutputDir, true);
     if( ec ) {
       std::cout << "could not find output dir:" << outputDir
@@ -414,14 +434,22 @@ int main(int argc, const char **argv) {
     } 
   }
      
-  ClassWriter Writer("gp","TKMath", set<string>({"Standard"}));
-  MatchFinder Finder;
-  Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource,
-			     ClassMatcher
-			     ), &Writer);
-
-  
-  int result = Tool.run(newFrontendActionFactory( &Finder).get());
-  if( result != 0) cout << "Error during Tool run" << endl;
-  Writer.writeFile();
+  for( auto ctr = classTranslations.begin(); ctr != classTranslations.end(); ++ctr) {
+    if( !TargetClass.empty() && TargetClass != ctr->targetClass) continue;
+    auto& files_ = groupedFiles[ctr->targetClass];
+    std::vector<std::string> files( files_.size()); int j=0;
+    for( auto i = files_.begin(); i != files_.end(); ++i) {
+      files[j++] = *i;
+    }
+    ClangTool Tool(cdb, files); 
+    ClassWriter Writer(*ctr);
+    MatchFinder Finder;
+    Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource,
+			       ClassMatcher
+			       ), &Writer);
+    
+    int result = Tool.run(newFrontendActionFactory( &Finder).get());
+    if( result != 0) cout << "Error during Tool run" << endl;
+    Writer.writeFile();
+  }
 }
