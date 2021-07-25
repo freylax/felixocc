@@ -61,21 +61,46 @@ DeclarationMatcher EnumMatcher =
 
 class FType {
 public:
-  FType(): builtin(false), pointer(false), handle( false) {}
+  FType(): builtin(false), pointer(false), handle( false), templateClass(false) {}
   string name;
   string inClass;
   bool   builtin;
   bool   pointer;
   bool   handle;
+  bool   templateClass;
+  string templateTypeSpec;
   list<FType> typeArgs;
   string log;
 };
 
 
+bool translateStandardTypes( const string& name, FType& t) {
+  bool ret = true;
+  if( name == "Real" )
+    { t.name = "double"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Integer" )
+    { t.name = "int"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Boolean" )
+    { t.name = "bool"; t.builtin = true; t.inClass.clear(); }
+  else ret = false;
+  return ret;
+}
+
+
+string cToFclass( const string& n) {
+  if( n == "NCollection" ) return "Collection";
+  return n;
+}
+
+// string fToCclass( const string& n) {
+//   if( n == "Collection" ) return "NCollection";
+//   return n;
+// }
+
 void setClassAndName( const string& n, FType& t) {
   string::size_type p = n.find_first_of( '_');
   if( p != string::npos ) {
-    t.inClass = n.substr( 0, p);
+    t.inClass = cToFclass( n.substr( 0, p));
     t.name = n.substr( p+1, string::npos);
   } else {
     t.name = n;
@@ -93,9 +118,11 @@ template<class T> string dumpToStr(const T& t) {
   return s;
 }
 
+
 enum TypeImplementation {
   Value,
   OccHandle,
+  TemplateClassVH,
   Other
 };
 
@@ -116,18 +143,14 @@ FType trType( const QualType& qt_) {
   if( qt->isTypedefNameType()){
     t.log += "td,";
     setClassAndName( qt.getAsString(), t);
-    if( t.inClass == "TColStd" ) {
-      t.log += "TColStd,";
+    if( t.inClass.compare( 0,4,"TCol" ) == 0) {
+      // this will expand to NCollection ...
+      t.log += t.inClass + ",";
       bool p = t.pointer; string l = t.log;
       t = trType( qt->getAs<TypedefType>()->desugar());
       t.pointer = p; t.log = l + t.log;
     } else if( t.inClass == "Standard") {
-      if( t.name == "Real" )
-	{ t.name = "double"; t.builtin = true; t.inClass.clear(); }
-      else if( t.name == "Integer" )
-	{ t.name = "int"; t.builtin = true; t.inClass.clear(); }
-      else if( t.name == "Boolean" )
-	{ t.name = "bool"; t.builtin = true; t.inClass.clear(); }
+      translateStandardTypes( t.name, t);
       //   else if( n == "Standard_OStream" )
       //     { t.name = "ostream"; t.inClass = "std"; return t; }
       //   else if( n == "Standard_SStream" )
@@ -149,7 +172,34 @@ FType trType( const QualType& qt_) {
     if( !trTemplate( qt, t)) {
       const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
       setClassAndName( crd->getNameAsString(), t);
+      if( t.inClass.compare( 0,4,"TCol" ) == 0) {
+	t.inClass = "Collection";
+	t.templateClass = true;
+	string::size_type p = t.name.find( "Of");
+	if( p != string::npos ) {
+	  string container = t.name.substr( 0, p);
+	  if( container[0] == 'H' ) {
+	    t.templateTypeSpec = "H"; // HandleType
+	    container = container.substr(1, string::npos);
+	  } else {
+	    t.templateTypeSpec = "V"; // ValueType
+	  }
+	  const string type_ = t.name.substr(p+2, string::npos);
+	  t.name = container;
+	  FType t_; t_.inClass = "Standard";
+	  translateStandardTypes( type_, t_);
+	  t.typeArgs.push_back( t_);
+	}
+      }
     }
+  } else if( qt->isEnumeralType()) {
+    t.log += "en,";
+    string n = qt.getAsString();
+    string::size_type p = n.find( "enum ");
+    if( p != string::npos ) {
+      n = n.substr( p+5, string::npos);
+    }
+    setClassAndName( n, t);
   } else {
     t.log += string("cl=") + string(qt->getTypeClassName());
     //qt->dump();
@@ -181,6 +231,11 @@ bool trTemplate( const QualType& qt, FType& t) {
       for( unsigned int i = 0; i<n; ++i) {
 	t.typeArgs.push_back( trType(st->getArg(i).getAsType()));
       }
+      t.templateClass = true;
+      if( t.inClass == "NCollection" ) {
+	t.inClass = "Collection";
+	t.templateTypeSpec = "V"; // ValueType
+      }
     }
     return true;
   }
@@ -196,6 +251,7 @@ string trTypeLog( const FType& t) {
   if( t.pointer) v = "&";
   if( t.builtin) { if( v.empty()) v = "b"; else v+= ",b"; }
   if( t.handle)  { if( v.empty()) v = "h"; else v+= ",h"; }
+  if( t.templateClass) { if( v.empty()) v = "t"; else v+= ",t"; }
   if( !v.empty()) l << "(" << v <<")"; 
   if( !t.typeArgs.empty()) {
     l << "[";
@@ -216,7 +272,17 @@ FType trType( const QualType& qt, set<string>& log) {
   return t;
 }
 
+struct DefStackItem {
+  DefStackItem( const DeclContext* dc) : decl( dc) {}
+  const DeclContext*   decl;
+  stringstream   def;
+  stringstream   eofTypeDef;
+};
+
 struct TranslationUnit {
+  TranslationUnit(): defs( deque<shared_ptr<DefStackItem>>( 1, shared_ptr<DefStackItem>(new DefStackItem( 0)))),
+		     def( &defs.top()->def),
+		     eofTypeDef( &defs.top()->eofTypeDef) {}
   string filePath;
   string fileName;
   string headerName;
@@ -227,12 +293,48 @@ struct TranslationUnit {
   // provided (in class) types 
   set<string> prTypes;
   int currentIndent;
-  stringstream def;
-  stringstream eofTypeDef;
   set<string> trTypeLog;
+private:
+  stack<shared_ptr<DefStackItem>> defs;
+public:
+  stringstream* def;
+  stringstream* eofTypeDef;
+  void setDeclContext( const DeclContext* dc) {
+    auto t = defs.top();
+    if( t->decl == 0) {
+      //cout << "setDeclContext( )" << endl;
+      t->decl=dc;
+    } else if( t->decl == dc ) {
+      //cout << "setDeclContext( == )" << endl;
+    } else if( dc != 0 && t->decl == dc->getParent()) {
+      // push
+      //cout << "setDeclContext( == parent)" << endl;
+      defs.push( shared_ptr<DefStackItem>( new DefStackItem( dc)));
+      auto t_ = defs.top();
+      def = &(t_->def);
+      eofTypeDef = &(t_->eofTypeDef);
+      ++currentIndent;
+    } else {
+      // pop
+      //cout << "setDeclContext( != parent), defs.size=" << defs.size() << endl;
+      while( defs.size() > 0 && defs.top()->decl != dc) {
+	auto t = defs.top();
+	t->def << t->eofTypeDef.str();
+	if( defs.size() > 1) {
+	  defs.pop();
+	  defs.top()->def << t->def.str();
+	  --currentIndent;
+	} else {
+	  break;
+	}
+      }
+      def = &(defs.top()->def);
+      eofTypeDef = &(defs.top()->eofTypeDef);
+    }
+  }
 };
 
-string indent( const int& n) { return string(2*n,' '); }
+string indent( const int& n) { return string( (n < 0 ? 0 : ( n > 10 ? 10 : n ) ) * 2,' '); }
 
 bool containsAtLeastOneOf(const set<string>& u,const set<string>& v) {
   auto i = u.begin();
@@ -283,6 +385,9 @@ string inClassType( const FType& ft, const ClassContext& ct, const bool& isRetTy
     }
     name += "]";
   }
+  if( ft.templateClass && !ft.templateTypeSpec.empty()) {
+    name += "::" + ft.templateTypeSpec;
+  }
   return name;
 }
 
@@ -317,41 +422,87 @@ list<pair<string,string>> namedArgs
   return a;
 }
 
-
 bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
   tu.prTypes.insert( ct.ftype);
-  tu.def << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
-  if( ct.handle)
-    tu.def << "opencascade::handle<" << ct.ctype << ">";
-  else
-    tu.def << ct.ctype;
-  tu.def << "\" requires " << tu.headerName << ";" << endl;
+  auto& d = *tu.def;
+  if( ! rd->isAbstract()) {
+    d << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
+    if( ct.handle)
+      d << "opencascade::handle<" << ct.ctype << ">";
+    else
+      d << ct.ctype;
+    d << "\" requires " << tu.headerName << ";" << endl;
+  }
   if( !ct.classHierarchyTypeVar.empty()) {
     // we create a felix class
-    tu.def << indent(tu.currentIndent) << "class " << ct.ftype
-	   << "_[" << ct.classHierarchyTypeVar << "] {" << endl;
+    d << indent(tu.currentIndent) << "class " << ct.ftype
+      << "_[" << ct.classHierarchyTypeVar << "] {" << endl;
     ++tu.currentIndent;
     for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
       FType ft = trType(b->getType());
-      tu.def << indent(tu.currentIndent) << "inherit " << ft.name << "_[" << ct.classHierarchyTypeVar << "];" << endl;
+      d << indent(tu.currentIndent) << "inherit " << ft.name << "_[" << ct.classHierarchyTypeVar << "];" << endl;
       tu.dpTypes.insert( ft.name);
     }
     // here come the member defs
     // and after them
     int ind=tu.currentIndent-1;
-    tu.eofTypeDef << indent(ind) << "}" << endl;
-    tu.eofTypeDef << indent(ind) << "instance " << ct.ftype
-		  << "_[" << ct.ftype << "] {}" << endl;
-    tu.eofTypeDef << indent(ind) << "inherit " << ct.ftype
-		  << "_[" << ct.ftype << "];" << endl;
+    auto& eofTypeDef = *tu.eofTypeDef;
+    eofTypeDef << indent(ind) << "}" << endl;
+    if( ! rd->isAbstract()) {
+      eofTypeDef << indent(ind) << "instance " << ct.ftype
+		 << "_[" << ct.ftype << "] {}" << endl;
+      eofTypeDef << indent(ind) << "inherit " << ct.ftype
+		 << "_[" << ct.ftype << "];" << endl;
+    }
   } 
   return true;
 }
 
+static std::map<std::string,std::list<std::string>> tcolHFiles;  // mapping Container->files 
+
+bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
+  if( tu.currentIndent > 1) return true;
+  tu.prTypes.insert( ct.ftype);
+  auto& d = *tu.def;
+  if( !ct.classHierarchyTypeVar.empty()) {
+    // we create a felix class
+    d << indent(tu.currentIndent)
+      << "class " << ct.ftype << "[" << ct.classHierarchyTypeVar << "] {" << endl;
+    ++tu.currentIndent;
+    //d << indent( tu.currentIndent)
+    //  << "inherit Standard::ClassVH;" << endl; 
+    d << indent( tu.currentIndent)
+      << "type V = \"" << ct.ctype << "<?1>\" "
+      << "requires " << tu.headerName << ";" << endl;
+    d << indent( tu.currentIndent) << "virtual type H;" << endl;
+    // here come the member defs
+    // and after them
+    int ind=tu.currentIndent-1;
+    auto& eofTypeDef = *tu.eofTypeDef;
+    eofTypeDef << indent(ind) << "}" << endl;
+    auto i = tcolHFiles.find( ct.ftype);
+    if( i != tcolHFiles.end()) {
+      auto l = i->second;
+      for( auto j = l.begin(); j != l.end(); ++j) {
+	// set instances
+
+
+      }
+    }
+    //if( ! rd->isAbstract()) {
+    // eofTypeDef << indent(ind) << "instance " << ct.ftype
+    // 	       << "_[" << ct.ftype << "] {}" << endl;
+    // eofTypeDef << indent(ind) << "inherit " << ct.ftype
+    // 	       << "_[" << ct.ftype << "];" << endl;
+  } 
+  return true;
+}
+
+
 bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
     if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
-    auto& d = tu.def;
+    auto& d = *tu.def;
     d << indent(tu.currentIndent) << "ctor " << ct.ftype << ": ";
     auto args_ = args( m, ct, tu); 
     printArgs( args_, d);
@@ -368,9 +519,13 @@ bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu
 
 bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if ( !isa<CXXConstructorDecl>(m) && !isa<CXXDestructorDecl>(m) &&
-       ! m->isOverloadedOperator()) {
-    auto& d = tu.def;
-    const string name = m->getNameAsString(); 
+       ! m->isOverloadedOperator() &&
+       ! (m->isVirtual() && !m->isPure())
+       ) {
+    auto& d = *tu.def;
+    const string name = m->getNameAsString();
+    if( name == "get_type_descriptor" ||
+	name == "get_type_name") return true;
     const QualType rt = m->getReturnType();
     string frt;
     if ( !rt->isVoidType() )
@@ -410,6 +565,23 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 }
 
 
+bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
+  tu.prTypes.insert( ct.ftype);
+  auto& d = *tu.def;
+  auto ind = tu.currentIndent;
+  d << indent(ind) << "cenum " << ct.ftype << " = " << endl;
+  ++ind;
+  d << indent(ind);
+  for( auto i = ed->enumerator_begin(); i != ed->enumerator_end(); ++i) {
+    if( i != ed->enumerator_begin()) d << "," << endl << indent(ind);
+    d << i->getNameAsString(); 
+  }
+  d << " requires " << tu.headerName << ";" << endl;
+  --ind;
+  return true;
+}
+
+
 struct ClassTranslation {
   string targetClass;
   string package;
@@ -419,6 +591,8 @@ struct ClassTranslation {
   string classHierarchyTypeVar;
   function<bool( const CXXRecordDecl*,const ClassContext&, TranslationUnit&)> typeTr;
   list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
+  set<string> includeFiles;
+  set<string> excludeFiles;
 };
 
 class ClassWriter : public MatchFinder::MatchCallback {
@@ -426,7 +600,8 @@ private:
   list<shared_ptr<TranslationUnit>> tus;
   shared_ptr<TranslationUnit> tu;
   ClassTranslation ctr;
-
+  bool first = true;
+  
   ClassContext classContext( const string& name) {
     ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.typeImpl==OccHandle,ctr.classHierarchyTypeVar);
     ct.ctype = name;
@@ -459,15 +634,21 @@ public :
 	tu->filePath = fp.getValue().str();
 	tu->fileName = sys::path::filename( tu->filePath).str();
 	tu->headerName = tu->fileName; replace( tu->headerName.begin(), tu->headerName.end(), '.', '_');
+	tu->currentIndent = 1;
 	cout << tu->fileName << endl;
       }      
     }
+    
     const CXXRecordDecl *rd = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl");
     const EnumDecl *ed = Result.Nodes.getNodeAs<clang::EnumDecl>("enumDecl");
     if ( rd && rd->isCompleteDefinition() ) {
+      tu->setDeclContext( rd->getDeclContext());
+      //if( first )
+      //	rd->dumpLookups();
+      //first = false;
       ClassContext ct = classContext( rd->getDeclName().getAsString());
       //std::cout << "run" << std::endl;
-      tu->currentIndent = 1;
+      
       if( ctr.typeTr( rd, ct, *tu)) {
 	// methods
 	for( auto mi = rd->method_begin(); mi != rd->method_end(); ++mi) {
@@ -476,12 +657,13 @@ public :
 	    if( (*tr)( m, ct, *tu)) break;
 	  }
 	}
-	tu->def << tu->eofTypeDef.str();
+	//tu->def << tu->eofTypeDef.str();
       }
     } else if ( ed && ed->isCompleteDefinition() ) {
+      tu->setDeclContext( ed->getDeclContext());
       ClassContext ct = classContext( ed->getNameAsString());
-      tu->currentIndent = 1;
-      cout << "enum " << ct.ctype << endl; 
+      //tu->currentIndent = 1;
+      setEnum( ed, ct, *tu);
     }
   }
   virtual void onEndOfTranslationUnit() {
@@ -491,6 +673,7 @@ public :
     //for( auto i = tu->trTypeLog.begin(); i != tu->trTypeLog.end(); ++i) {
     //  cout << *i << endl;     
     //}
+    tu->setDeclContext( 0); // pop  up
     for( auto i = tu->dpClasses.begin(); i != tu->dpClasses.end(); ++i) {
       ctr.includes.insert( *i);
     }
@@ -551,7 +734,7 @@ public :
     }
     for( auto i = tus.begin(); i != tus.end(); ++i) {
       os << "// --- " << (*i)->fileName << " ---" << endl;
-      os << (*i)->def.str();
+      os << (*i)->def->str();
     }
     os << "};" << endl;
     os.close();
@@ -571,14 +754,14 @@ bool setTypeMaker( const CXXRecordDecl* rd, const ClassContext& ct, TranslationU
     } 
   }
   setType( rd, ct, tu);
-  tu.def << indent(tu.currentIndent) << "#init[" << ct.ftype << "," << makerRetType << "];" << endl;
+  *tu.def << indent(tu.currentIndent) << "#init[" << ct.ftype << "," << makerRetType << "];" << endl;
   return true;
 }
 
 bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
   if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
     if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
-    auto& d = tu.def;
+    auto& d = *tu.def;
     string n = ct.ftype;
     if( ct.ftype.find( "Make") == 0) n = ct.ftype.substr( 4);
     d << indent(tu.currentIndent) << "gen " << n << " ";
@@ -598,12 +781,14 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 static list<ClassTranslation> classTranslations =
   {
-    {"gp","TKMath",{"Standard"},{},Value,""
-     ,setType,{trCtor,trMemberFct}}
+    {"Collection","TKMath",{"Standard"},{},TemplateClassVH,"T"
+     ,setTypeTemplateVH,{},{"Array1"},{}}
+    ,{"gp","TKMath",{"Standard"},{},Value,""
+      ,setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
     ,{"Geom", "TKG3d",{"Standard","gp"},{},OccHandle,"T"
-      ,setType,{trCtor,trMemberFct}}
-    ,{"GC", "TKGeomBase",{"Standard","Geom","gp"},{"GC_Impl"},Other,""
-      ,setTypeMaker,{trCtorMaker}}
+      ,setType,{trCtor,trMemberFct},{},{"UndefinedDerivative","UndefinedValue"}}
+    ,{"GC", "TKGeomBase",{"Standard","Geom","gp"},{"GC_Impl","Geom"},Other,""
+      ,setTypeMaker,{trCtorMaker},{},{"Root"}}
   };
 
 bool checkFor( const string& cl, const TypeImplementation& ti) {
@@ -631,8 +816,10 @@ int main(int argc, const char **argv) {
   std::string flags[] = { iFlag.str(), "-std=c++0x" };
   FixedCompilationDatabase cdb( realOccDir.str(), flags);
   std::map<std::string,std::list<std::string>> groupedFiles;
+  //  std::map<std::string,std::list<std::string>> tcolHFiles;  // mapping Container->files 
   std::error_code EC;
-  Regex modre("([A-Za-z0-9]+)[_A-Za-z0-9]*\\.hxx");
+  Regex modre("(^[A-Za-z0-9]+)[_]*([A-Za-z0-9]*)\\.hxx");
+  Regex tcolre("^TCol[A-Za-z]+_H([A-Za-z12]+)(Of[A-Za-z0-9]+)+\\.hxx");
   for( sys::fs::directory_iterator i( occIncDir, EC);
        i != sys::fs::directory_iterator(); i.increment( EC)) {
     if (EC) {
@@ -640,17 +827,33 @@ int main(int argc, const char **argv) {
 		   << EC.message() << '\n';
       exit(1);
     }
-    SmallVector<StringRef,2> m;
+    SmallVector<StringRef,3> m;
     if( modre.match( sys::path::filename( i->path()),&m)) {
       auto m_ = m.begin(); m_++; 
       if( m_ != m.end()) {
-	groupedFiles[ m_->str()].push_back(i->path());
+	groupedFiles[ cToFclass(m_->str())].push_back(i->path());
       }
+    }
+    if( tcolre.match( sys::path::filename( i->path()),&m)) {
+      auto m_ = m.begin(); m_++;
+      if( m_ != m.end()) {
+	string n = m_->str();
+	string::size_type p = n.find( "Of"); // filter out Of...
+	if( p != string::npos ) n = n.substr( 0, p);
+	string f = sys::path::filename(i->path()).str();
+	f = f.substr(0,f.size()-4); // chop of ".hxx"
+	tcolHFiles[ n].push_back( f);
+      }   
     }
   }
   //  for( auto i = groupedFiles.begin(); i != groupedFiles.end(); ++i) {
   //  std::cout << i->first << ":" << i->second.size() << std::endl;
   // }
+  for( auto i = tcolHFiles.begin(); i != tcolHFiles.end(); ++i) {
+    std::cout << i->first << ":" << std::endl;
+    for( auto j = i->second.begin(); j != i->second.end(); ++j)
+      std::cout << "  " << *j << std::endl;
+  }
   //exit(1);
   //  std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
   {
@@ -669,9 +872,20 @@ int main(int argc, const char **argv) {
   for( auto ctr = classTranslations.begin(); ctr != classTranslations.end(); ++ctr) {
     if( !TargetClass.empty() && TargetClass != ctr->targetClass) continue;
     auto& files_ = groupedFiles[ctr->targetClass];
-    std::vector<std::string> files( files_.size()); int j=0;
+    std::vector<std::string> files;//( files_.size()); int j=0;
     for( auto i = files_.begin(); i != files_.end(); ++i) {
-      files[j++] = *i;
+      string::size_type p = i->find_last_of( '_');
+      string::size_type q = i->find_last_of( '.');
+      string s;
+      if( p != string::npos && q != string::npos ) {
+	s = i->substr( p+1, q-p-1);
+	//cout << *i << " : [" << s << "]" << endl;
+      }
+      if( (!ctr->includeFiles.empty() && ctr->includeFiles.find(s)!=ctr->includeFiles.end()) ||
+	  (!ctr->excludeFiles.empty() && ctr->excludeFiles.find(s)==ctr->excludeFiles.end()) ||
+	  (ctr->includeFiles.empty() && ctr->excludeFiles.empty())) {
+	files.push_back(*i);//[j++] = *i;
+      }
     }
     ClangTool Tool(cdb, files); 
     ClassWriter Writer(*ctr);
