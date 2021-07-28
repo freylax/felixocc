@@ -78,10 +78,26 @@ bool translateStandardTypes( const string& name, FType& t) {
   bool ret = true;
   if( name == "Real" )
     { t.name = "double"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "ShortReal" )
+    { t.name = "float"; t.builtin = true; t.inClass.clear(); }
   else if( name == "Integer" )
     { t.name = "int"; t.builtin = true; t.inClass.clear(); }
   else if( name == "Boolean" )
     { t.name = "bool"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Character" )
+    { t.name = "char"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Byte" )
+    { t.name = "byte"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Address" )
+    { t.name = "caddress"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "Size" )
+    { t.name = "size"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "ExtCharacter" )
+    { t.name = "uint16"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "CString" )
+    { t.name = "cstring"; t.builtin = true; t.inClass.clear(); }
+  else if( name == "ExtendedString" )
+    { t.name = "+uint16"; t.builtin = true; t.inClass.clear(); }
   else ret = false;
   return ret;
 }
@@ -130,6 +146,8 @@ bool checkFor( const string& cl, const TypeImplementation& ti);
 
 bool trTemplate( const QualType& qt, FType& t);
 
+bool trTColName( const string& name, FType& t, string& coltype);
+
 FType trType( const QualType& qt_) {
   QualType qt = qt_;
   FType t; t.builtin=false; t.pointer=false;
@@ -151,13 +169,6 @@ FType trType( const QualType& qt_) {
       t.pointer = p; t.log = l + t.log;
     } else if( t.inClass == "Standard") {
       translateStandardTypes( t.name, t);
-      //   else if( n == "Standard_OStream" )
-      //     { t.name = "ostream"; t.inClass = "std"; return t; }
-      //   else if( n == "Standard_SStream" )
-      //     { t.name = "stringstream"; t.inClass = "std"; return t; }
-    
-      //   //const TypedefType* tt = 
-      //   //qt = tt->desugar();
     }
   } else if( qt->isBuiltinType() ) {
     t.log += "bi,";
@@ -171,25 +182,9 @@ FType trType( const QualType& qt_) {
     t.log += "rd,";
     if( !trTemplate( qt, t)) {
       const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
-      setClassAndName( crd->getNameAsString(), t);
-      if( t.inClass.compare( 0,4,"TCol" ) == 0) {
-	t.inClass = "Collection";
-	t.templateClass = true;
-	string::size_type p = t.name.find( "Of");
-	if( p != string::npos ) {
-	  string container = t.name.substr( 0, p);
-	  if( container[0] == 'H' ) {
-	    t.templateTypeSpec = "H"; // HandleType
-	    container = container.substr(1, string::npos);
-	  } else {
-	    t.templateTypeSpec = "V"; // ValueType
-	  }
-	  const string type_ = t.name.substr(p+2, string::npos);
-	  t.name = container;
-	  FType t_; t_.inClass = "Standard";
-	  translateStandardTypes( type_, t_);
-	  t.typeArgs.push_back( t_);
-	}
+      string coltype;
+      if( !trTColName( crd->getNameAsString(), t, coltype)) {
+	setClassAndName( crd->getNameAsString(), t);
       }
     }
   } else if( qt->isEnumeralType()) {
@@ -205,6 +200,9 @@ FType trType( const QualType& qt_) {
     //qt->dump();
     t.name = qt.getAsString();
   }
+  if( !t.templateTypeSpec.empty()) {
+    t.log += string(",") + t.templateTypeSpec;
+  }
   return t;
 }
 
@@ -212,16 +210,29 @@ bool trTemplate( const QualType& qt, FType& t) {
   if( auto st = qt->getAs<TemplateSpecializationType>()) {
     t.log += "ts,";
     string tn = dumpToStr( st->getTemplateName());
-    if( tn == "handle" ) {
-      t.log += "hd,";
+    if( tn == "handle" ) { 
       FType p = trType(st->getArg(0).getAsType());
-      t.name = p.name;
-      t.inClass = p.inClass;
-      t.handle = true;
-      if( !checkFor( t.inClass, OccHandle)) {
-	cout << endl << "warning: " << t.inClass
-	     << "is not implemented as OccHandle but was requested as such!"
-	     << endl;
+      if( checkFor( p.inClass, OccHandle)) {
+	// these types will always be implemented as handle
+	t.log += "hd,";	
+	t.name = p.name;
+	t.inClass = p.inClass;
+	t.handle = true;
+	t.log += p.log;
+      } else if( p.inClass == "Collection") {
+	t.log += "col,";
+	t.name = p.name;
+	t.inClass = p.inClass;
+	t.templateClass = p.templateClass;
+	t.templateTypeSpec = p.templateTypeSpec;
+	t.typeArgs = p.typeArgs;
+	t.log += p.log;
+      } else {
+	t.log += "ehd,";
+	t.name = "handle";
+	t.inClass = "Standard";
+	t.templateClass = true;
+	t.typeArgs.push_back( p);
       }
     } else {
       // no handle
@@ -232,8 +243,7 @@ bool trTemplate( const QualType& qt, FType& t) {
 	t.typeArgs.push_back( trType(st->getArg(i).getAsType()));
       }
       t.templateClass = true;
-      if( t.inClass == "NCollection" ) {
-	t.inClass = "Collection";
+      if( t.inClass == "Collection" ) {
 	t.templateTypeSpec = "V"; // ValueType
       }
     }
@@ -242,6 +252,49 @@ bool trTemplate( const QualType& qt, FType& t) {
   return false;
 }
 
+bool trTColName( const string& name, FType& t, string& coltype)
+{
+  if( name.compare( 0,4,"TCol" ) == 0) {
+    t.inClass = "Collection";
+    t.templateClass = true;
+    // get the class of the argument
+    string::size_type p = name.find_first_of( '_');
+    coltype = name.substr( p+1, string::npos);
+    FType a;
+    a.inClass = name.substr( 4 /*TCol*/, p-4);
+    if( a.inClass == "Std") a.inClass = "Standard";
+    p = coltype.find( "Of"); // the first Of
+    if( p != string::npos ) {
+      string n = coltype.substr( p+2, string::npos);
+      t.name = coltype.substr( 0, p);
+      if( t.name[0] == 'H' ) {
+	t.templateTypeSpec = "H"; // HandleType
+	t.name = t.name.substr(1, string::npos);
+      } else {
+	t.templateTypeSpec = "V"; // ValueType
+      }
+      p = n.find( "Of");       // can we find a second "Of"?
+      if( p != string::npos) {
+	a.inClass = "Collection";
+	a.templateClass = true;
+	a.templateTypeSpec = "V";
+	a.name = n.substr( 0,p); // no H types
+	FType b;
+	b.name = n.substr( p+2,string::npos);
+	translateStandardTypes( b.name, b); // we assume a standard type
+	a.typeArgs.push_back( b);
+      } else {
+	// normal argument
+	a.name = n;
+	if( a.inClass == "Standard")
+	  translateStandardTypes( a.name, a);	
+      }
+      t.typeArgs.push_back( a);	
+    }
+    return true;  
+  }
+  return false;
+}
 
 string trTypeLog( const FType& t) {
   stringstream l;
@@ -297,6 +350,7 @@ struct TranslationUnit {
 private:
   stack<shared_ptr<DefStackItem>> defs;
 public:
+  stringstream  headerDefs;
   stringstream* def;
   stringstream* eofTypeDef;
   void setDeclContext( const DeclContext* dc) {
@@ -415,9 +469,10 @@ list<pair<string,string>> namedArgs
 {
   list<pair<string,string>> a;
   for(unsigned int i=0; i < m->getNumParams(); i++) {
-    a.push_back( pair<string,string>(m->parameters()[i]->getQualifiedNameAsString(),
-				     inClassType( trType ( m->parameters()[i]->getType(), tu.trTypeLog),
-						  ct, false, tu)));
+    string n = m->parameters()[i]->getQualifiedNameAsString();
+    string t = inClassType( trType ( m->parameters()[i]->getType(), tu.trTypeLog), ct, false, tu);
+    if( n == t) n = n + string("_");
+    a.push_back( pair<string,string>( n,t));				     
   }
   return a;
 }
@@ -425,14 +480,14 @@ list<pair<string,string>> namedArgs
 bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
-  if( ! rd->isAbstract()) {
+  //  if( ! rd->isAbstract()) {
     d << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
     if( ct.handle)
       d << "opencascade::handle<" << ct.ctype << ">";
     else
       d << ct.ctype;
     d << "\" requires " << tu.headerName << ";" << endl;
-  }
+    //}
   if( !ct.classHierarchyTypeVar.empty()) {
     // we create a felix class
     d << indent(tu.currentIndent) << "class " << ct.ftype
@@ -440,8 +495,10 @@ bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& 
     ++tu.currentIndent;
     for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
       FType ft = trType(b->getType());
-      d << indent(tu.currentIndent) << "inherit " << ft.name << "_[" << ct.classHierarchyTypeVar << "];" << endl;
-      tu.dpTypes.insert( ft.name);
+      d << indent(tu.currentIndent)
+	<< "inherit " << inClassType( ft, ct, false,tu) << "_[" << ct.classHierarchyTypeVar << "];" << endl;
+      if( ct.inClass == ft.inClass)
+	tu.dpTypes.insert( ft.name);
     }
     // here come the member defs
     // and after them
@@ -485,15 +542,24 @@ bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, Transla
       auto l = i->second;
       for( auto j = l.begin(); j != l.end(); ++j) {
 	// set instances
-
-
+	// we construct the information from the names of files
+	FType t; string coltype;
+	trTColName( *j,t, coltype);
+	tu.headerDefs
+	  << "header " << *j << "_hxx = '#include \"" << *j << ".hxx\"';" << endl;
+	eofTypeDef
+	  << indent(ind)
+	  << "instance " << ct.ftype
+	  << "[" << inClassType( t.typeArgs.front(), ct, false, tu) << "] {" << endl
+	  << indent(ind+1) 
+	  << "type " << coltype << " = \"" << coltype << "\" requires " << *j << "_hxx;"
+	  << endl << indent(ind+1)
+	  << "instance type H = handle[" << coltype << "];" << endl
+	  << indent(ind+1)
+	  << "fun createH[A] (a:A) => createHandle[" << coltype << ",A](a);" << endl
+	  << indent( ind) << "}" << endl;
       }
     }
-    //if( ! rd->isAbstract()) {
-    // eofTypeDef << indent(ind) << "instance " << ct.ftype
-    // 	       << "_[" << ct.ftype << "] {}" << endl;
-    // eofTypeDef << indent(ind) << "inherit " << ct.ftype
-    // 	       << "_[" << ct.ftype << "];" << endl;
   } 
   return true;
 }
@@ -726,6 +792,7 @@ public :
     for( auto i = tus.begin(); i != tus.end(); ++i) {
       if( !(*i)->headerName.empty())
 	os << "header " << (*i)->headerName << " = '#include \"" << (*i)->fileName << "\"';" << endl;
+      os << (*i)->headerDefs.str();
     }
     os << "class " << ctr.targetClass << " {" << endl;
     os << "  requires package \"" << ctr.package << "\";" << endl;
@@ -781,14 +848,17 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 static list<ClassTranslation> classTranslations =
   {
-    {"Collection","TKMath",{"Standard"},{},TemplateClassVH,"T"
-     ,setTypeTemplateVH,{},{"Array1"},{}}
+    {"Collection","TKMath",{"Standard","gp"},{},TemplateClassVH,"T"
+     ,setTypeTemplateVH,{},{"Array1","Array2","Sequence","List"},{}}
     ,{"gp","TKMath",{"Standard"},{},Value,""
       ,setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
-    ,{"Geom", "TKG3d",{"Standard","gp"},{},OccHandle,"T"
-      ,setType,{trCtor,trMemberFct},{},{"UndefinedDerivative","UndefinedValue"}}
+    ,{"GeomAbs", "TKG3d",{},{},Value,""
+      ,setType,{},{},{}}
+    ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T"
+      ,setType,{trCtor,trMemberFct},{},
+      {"UndefinedDerivative","UndefinedValue","SequenceOfBSplineSurface","HSequenceOfBSplineSurface"}}
     ,{"GC", "TKGeomBase",{"Standard","Geom","gp"},{"GC_Impl","Geom"},Other,""
-      ,setTypeMaker,{trCtorMaker},{},{"Root"}}
+      ,setTypeMaker,{trCtorMaker},{"MakeSegment"},{/*"Root"*/}}
   };
 
 bool checkFor( const string& cl, const TypeImplementation& ti) {
@@ -849,11 +919,11 @@ int main(int argc, const char **argv) {
   //  for( auto i = groupedFiles.begin(); i != groupedFiles.end(); ++i) {
   //  std::cout << i->first << ":" << i->second.size() << std::endl;
   // }
-  for( auto i = tcolHFiles.begin(); i != tcolHFiles.end(); ++i) {
-    std::cout << i->first << ":" << std::endl;
-    for( auto j = i->second.begin(); j != i->second.end(); ++j)
-      std::cout << "  " << *j << std::endl;
-  }
+  // for( auto i = tcolHFiles.begin(); i != tcolHFiles.end(); ++i) {
+  //   std::cout << i->first << ":" << std::endl;
+  //   for( auto j = i->second.begin(); j != i->second.end(); ++j)
+  //     std::cout << "  " << *j << std::endl;
+  // }
   //exit(1);
   //  std::string files[] = { "/home/robert/prog/apps/opencascade-7.5.0-install/include/gp_Pnt.hxx"};
   {
