@@ -1,0 +1,23 @@
+header Standard_Handle_hxx = '#include "Standard_Handle.hxx"';
+header Standard_Transient_hxx = '#include "Standard_Transient.hxx"';
+header TCollection_AsciiString_hxx = '#include "TCollection_AsciiString.hxx"';
+header TCollection_HAsciiString_hxx = '#include "TCollection_HAsciiString.hxx"';
+header TCollection_HExtendedString_hxx = '#include "TCollection_HExtendedString.hxx"';
+
+class Standard {
+  requires package "TKernel";
+  //typedef Real = double;
+  //typedef Integer = int;
+  type OStream = "std::ostream" requires Cxx_headers::ostream;
+  type SStream = "std::stringstream" requires Cxx_headers::sstream;
+
+  type handle[T] = "opencascade::handle<?1>" requires Standard_Handle_hxx;
+  fun createHandle[T,A]: A -> handle[T] = "opencascade::handle<?1>(new (?1)($a))";
+  fun Ctor[T,A] : A -> T = "?1($a)";
+
+  type Transient = "Standard_Transient" requires Standard_Transient_hxx;
+  class Transient_[T] {};
+  type AsciiString = "TCollection_AsciiString" requires TCollection_AsciiString_hxx;
+  type HAsciiString = "TCollection_HAsciiString" requires TCollection_HAsciiString_hxx;
+  type HExtendedString = "TCollection_HExtendedString" requires TCollection_HExtendedString_hxx;  
+}

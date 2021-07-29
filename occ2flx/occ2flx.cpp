@@ -161,11 +161,13 @@ FType trType( const QualType& qt_) {
   if( qt->isTypedefNameType()){
     t.log += "td,";
     setClassAndName( qt.getAsString(), t);
-    if( t.inClass.compare( 0,4,"TCol" ) == 0) {
+    FType u = trType( qt->getAs<TypedefType>()->desugar());
+    if( u.inClass == "Collection" && u.templateClass) { // t.inClass.compare( 0,4,"TCol" ) == 0) {
       // this will expand to NCollection ...
       t.log += t.inClass + ",";
       bool p = t.pointer; string l = t.log;
-      t = trType( qt->getAs<TypedefType>()->desugar());
+      //t = trType( qt->getAs<TypedefType>()->desugar());
+      t = u;
       t.pointer = p; t.log = l + t.log;
     } else if( t.inClass == "Standard") {
       translateStandardTypes( t.name, t);
@@ -530,8 +532,14 @@ bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, Transla
     //  << "inherit Standard::ClassVH;" << endl; 
     d << indent( tu.currentIndent)
       << "type V = \"" << ct.ctype << "<?1>\" "
-      << "requires " << tu.headerName << ";" << endl;
-    d << indent( tu.currentIndent) << "virtual type H;" << endl;
+      << "requires " << tu.headerName << ";" << endl
+      << indent( tu.currentIndent)
+      << "ctor[A] V (a:A) => Standard::Ctor[V,A](a);" << endl		       
+      << indent( tu.currentIndent)
+      << "virtual type H;" << endl
+      << indent( tu.currentIndent)
+      << "virtual fun createH[A]: A -> H;" << endl;
+
     // here come the member defs
     // and after them
     int ind=tu.currentIndent-1;
@@ -561,6 +569,11 @@ bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, Transla
       }
     }
   } 
+  return true;
+}
+
+bool checkForCollectionInstance( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
+  // we check if the type is a handle<Class(Transient,CollectionContainer)>
   return true;
 }
 

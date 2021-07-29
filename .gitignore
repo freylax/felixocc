@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+
+#
+*~
+flxg_stats.txt

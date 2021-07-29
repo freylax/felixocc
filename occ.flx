@@ -1,0 +1,55 @@
+//include "gp_Pnt.hxx";
+//header gp_Pnt_hxx = '#include "gp_Pnt.hxx"';
+
+//open class Pnt {
+//  requires package "occ";
+//  type Pnt = "gp_Pnt" requires gp_Pnt_hxx;
+//  ctor Pnt : double * double * double = "gp_Pnt($1, $2, $3)";
+//  fun X: Pnt -> double = "$1.X()";
+//  };
+
+//include "occ/occ";
+include "src/gp";
+include "src/GC";
+include "src/Collection";
+
+open gp;
+open Collection;
+//init_occ;
+
+var w = 50.0;
+var h = 70.0;
+var t = 30.0;
+
+var p1 = Pnt( -w / 2.0, 0, 0);
+var p2 = Pnt( -w / 2.0, -t / 4.0, 0);
+var p3 = Pnt(0, -t / 2., 0);
+var p4 = Pnt( w / 2., -t / 4., 0);
+var p5 = Pnt( w / 2., 0, 0);
+
+var aArcOfCircle = ArcOfCircle( p2,p3,p4);
+var aSegment1    = Segment( p1, p2);
+var aSegment2    = Segment( p4, p5);
+
+println$ "X=" + str( p1.X ) + " Y=" + str( p1.Y ) + " Z=" + str( p1.Z );
+
+//open Array1;
+open Array1[int];
+
+var a1 = Array1[int]::createH(0,3);
+//var s = a1.length;
+//println$ "a1.Size=" + str( s );
+open GC;
+open Geom;
+var t = Segment p1 p2;
+
+println$ "Trimmed curve, start=" + t.StartPoint.X.str + ", end=" + t.EndPoint.X.str;
+// if s.IsDone do
+//   var c = s.Value;
+//   println$ "got trimmed Curve";
+// else
+//   var e = s.Status;
+//   println$ "got Error" + str( e);
+// done
+
+
