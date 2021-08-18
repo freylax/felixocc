@@ -602,7 +602,7 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
        ! (m->isVirtual() && !m->isPure())
        ) {
     auto& d = *tu.def;
-    const string name = m->getNameAsString();
+    string name = m->getNameAsString();
     if( name == "get_type_descriptor" ||
 	name == "get_type_name") return true;
     const QualType rt = m->getReturnType();
@@ -616,8 +616,13 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
       d << "ctor ";
     else
       d << "fun ";
-    d << name << ": ";
     std::list<string> args_ = args( m, ct, tu);
+    if( tu.dpTypes.find( name) != tu.dpTypes.end()) {
+      // we rename the member name
+      name[0] = tolower(name[0]);
+    }
+    d << name << ": ";
+
     // if not a static method then first arg is of type ftype
     if( !m->isStatic()) {
       if( ct.classHierarchyTypeVar.empty())
@@ -643,6 +648,18 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
   } else return false;
 }
 
+string camelToSpaces( string s) {
+  string r;
+  string::size_type p = s.find_first_of( '_');
+  if( p != string::npos ) s = s.substr(p+1,string::npos);
+  for( int i = 0; i< s.size(); ++i) {
+    auto c = s[i];
+    if( i > 0 && isupper( c)) r.push_back( ' ');
+    r.push_back( c);
+  }
+  return r;
+}
+
 
 bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
   tu.prTypes.insert( ct.ftype);
@@ -657,6 +674,21 @@ bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
   }
   d << " requires " << tu.headerName << ";" << endl;
   --ind;
+  d << indent( ind)
+    << "instance Str[" << ct.ftype << "] {" << endl;
+  ++ind;
+  d << indent( ind)
+    << "fun str: " << ct.ftype << " -> string =" << endl ;
+  ++ind;
+  for( auto i = ed->enumerator_begin(); i != ed->enumerator_end(); ++i) {
+    //if( i != ed->enumerator_begin()) d << "," << endl << indent(ind);
+    d << indent( ind)
+      << "| $(" << i->getNameAsString() << ") => \""
+      << camelToSpaces(i->getNameAsString()) << "\"" << endl;
+  }
+  d << indent( ind) << ";" << endl;
+  --ind; --ind;
+  d << indent( ind) << "}" << endl;
   return true;
 }
 
@@ -774,6 +806,8 @@ public :
     // Open the output file
     ofstream os( outputFilePath.c_str());
     set<string> typeLog;
+    set<string> prTypes;
+    set<string> dpTypes;
     for( auto i = tus.begin(); i != tus.end(); ++i) {
       const TranslationUnit& tu = *(*i);
       for( auto j = tu.trTypeLog.begin(); j != tu.trTypeLog.end(); ++j) {
@@ -782,16 +816,23 @@ public :
       os << "// --- " << tu.fileName << " ---" << endl;
       os << "// provides: ";
       for( auto j = tu.prTypes.begin(); j != tu.prTypes.end(); ++j) {
+	prTypes.insert( *j);
 	if( j != tu.prTypes.begin()) os << ", ";
 	os << *j;
       }
       os << endl;
       os << "// requires: ";
       for( auto j = tu.dpTypes.begin(); j != tu.dpTypes.end(); ++j) {
+	dpTypes.insert( *j);
 	if( j != tu.dpTypes.begin()) os << ", ";
 	os << *j;
       }
       os << endl;
+    }
+    // we remove all known (provided) types from the dependend types,
+    // the rest we just define
+    for( auto i = prTypes.begin(); i != prTypes.end(); ++i) {
+      dpTypes.erase( *i);
     }
     os << "// ---------------------------------------------------------" << endl;
     os << "// type translations:" << endl;
@@ -807,11 +848,22 @@ public :
 	os << "header " << (*i)->headerName << " = '#include \"" << (*i)->fileName << "\"';" << endl;
       os << (*i)->headerDefs.str();
     }
+    for( auto i = dpTypes.begin(); i != dpTypes.end(); ++i) {
+      // we dont regard renamings here!
+      string hn = ctr.targetClass + "_" + *i;
+      os << "header " << hn << "_hxx = '#include \"" << hn << ".hxx\"';" << endl;
+    }
     os << "class " << ctr.targetClass << " {" << endl;
     os << "  requires package \"" << ctr.package << "\";" << endl;
     for( auto i = ctr.openClasses.begin(); i != ctr.openClasses.end(); ++i) {
       os << "  open " << *i << ";" << endl;
     }
+    for( auto i = dpTypes.begin(); i != dpTypes.end(); ++i) {
+      // we dont regard renamings here!
+      string hn = ctr.targetClass + "_" + *i;
+      os << "  type " << *i << " = \"" << hn << "\" requires " << hn << "_hxx;" << endl;
+    }
+    
     for( auto i = tus.begin(); i != tus.end(); ++i) {
       os << "// --- " << (*i)->fileName << " ---" << endl;
       os << (*i)->def->str();
@@ -825,16 +877,49 @@ static string makerRetType;
 
 bool setTypeMaker( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
   makerRetType.clear();
+  string makerErrorType;
+  string n = ct.ftype;
+  bool error = false;
+  bool gcClass = false;
+  if(n.find( "Make") == 0) n = ct.ftype.substr( 4);
+  else return false;
   for( auto mi = rd->method_begin(); mi != rd->method_end(); ++mi) {
     const CXXMethodDecl* m = mi.operator*();
-    if( m->getNameAsString() == "Value" ) {
-      FType ft = trType( m->getReturnType(), tu.trTypeLog);
+    const CXXConversionDecl* cd = dynamic_cast<CXXConversionDecl*>(mi.operator*());
+    if( cd != 0) {
+      FType ft = trType( cd->getConversionType(), tu.trTypeLog);
       makerRetType = ft.name;
-      break;
-    } 
+    } else if( m->getNameAsString() == "Error" ) {
+      FType ft = trType( m->getReturnType(), tu.trTypeLog);
+      if( ct.inClass == ft.inClass)
+	tu.dpTypes.insert( ft.name);
+      makerErrorType = ft.name;
+      error = true;
+    } else if( m->getNameAsString() == "Value" ) {
+      gcClass = true;
+    }
   }
   setType( rd, ct, tu);
-  *tu.def << indent(tu.currentIndent) << "#init[" << ct.ftype << "," << makerRetType << "];" << endl;
+  bool withoutError = ( gcClass && rd->bases_begin() == rd->bases_end())
+    || !error; // no base class
+  *tu.def << indent(tu.currentIndent) << "#init";
+  if( withoutError) *tu.def << "WE";
+  *tu.def << "[" << ct.ftype << "," << makerRetType << "];" << endl;
+  if( error) {
+    auto& eofTypeDef = *tu.eofTypeDef;
+    eofTypeDef << indent( tu.currentIndent)
+	       << "instance Maker::Interface[" << ct.ftype << "] {" << endl
+	       << indent( tu.currentIndent+1)
+	       << "instance type E = " << makerErrorType << ";" << endl
+	       << indent( tu.currentIndent+1)
+	       << "fun IsDone[I] : I -> bool = \"$1->IsDone()\";" << endl
+	       << indent( tu.currentIndent+1)      
+	       << "fun Error[I] : I ->  E = \"$1->Error()\";" << endl
+    	       << indent( tu.currentIndent+1)
+	       << "fun Value[I,O] : I -> O = \"(?2) *$1\";" << endl
+  	       << indent( tu.currentIndent)
+	       << "}" << endl;
+  }
   return true;
 }
 
@@ -844,11 +929,15 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     auto& d = *tu.def;
     string n = ct.ftype;
     if( ct.ftype.find( "Make") == 0) n = ct.ftype.substr( 4);
-    d << indent(tu.currentIndent) << "gen " << n << " ";
+    n[0]=tolower(n[0]);
+    d << indent(tu.currentIndent) << "fun " << n << " ";
     auto args_ = namedArgs( m, ct, tu);
+    d << "(";
     for( auto a = args_.begin(); a != args_.end(); ++a) {
-      d << "(" << a->first << ":" << a->second << ") ";
+      if( a != args_.begin()) d << ", ";
+      d << a->first << ":" << a->second;
     }
+    d << ") ";
     d << "=> maker[" << ct.ftype << "," << makerRetType << "](";
     for( auto a = args_.begin(); a != args_.end(); ++a) {
       if( a != args_.begin()) d << ",";
@@ -858,6 +947,8 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     return true;
   } else return false;
 }
+
+
 
 static list<ClassTranslation> classTranslations =
   {
@@ -870,8 +961,24 @@ static list<ClassTranslation> classTranslations =
     ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T"
       ,setType,{trCtor,trMemberFct},{},
       {"UndefinedDerivative","UndefinedValue","SequenceOfBSplineSurface","HSequenceOfBSplineSurface"}}
-    ,{"GC", "TKGeomBase",{"Standard","Geom","gp"},{"GC_Impl","Geom"},Other,""
-      ,setTypeMaker,{trCtorMaker},{"MakeSegment"},{/*"Root"*/}}
+    ,{"Geom2d", "TKG2d",{"gp","Collection"},{"Standard"},OccHandle,"T"
+      ,setType,{trCtor,trMemberFct},{},
+      {"UndefinedDerivative","UndefinedValue"}}
+    ,{"GC", "TKGeomBase",{"Standard","Geom","gp","GC_Maker"},{"GC_Maker","Geom"},Other,""
+      ,setTypeMaker,{trCtorMaker},{},{"Root"}}
+    ,{"TopAbs", "TKBRep",{},{},Value,"",setType,{},{},{}}
+    ,{"TopLoc", "TKBRep",{},{},Value,"",setType,{},{},{}}
+    ,{"TopoDS", "TKBRep",{"gp","Collection"},{"Standard"},Value,""
+      ,setType,{trCtor,trMemberFct},
+      {"Shape","Shell","Solid","Iterator","Compound","CompSolid","Edge",
+       "Face","Vertex","Wire"},{}}
+    ,{"BRepBuilderAPI", "TKTopAlgo",
+      {"Standard","Geom","gp","TopoDS","BRepBuilderAPI_Maker"},{"BRepBuilderAPI_Maker","Geom"},Other,""
+      ,setTypeMaker,{trCtorMaker},
+      { "MakeEdge2d","MakeEdge","MakeFace","MakePolygon","MakeShape","MakeShell","MakeSolid","MakeVertex","MakeWire",
+	"EdgeError","WireError","FaceError", "PipeError","ShellError"},
+      {/*"Sewing","VertexInspector"*/}}
+    
   };
 
 bool checkFor( const string& cl, const TypeImplementation& ti) {

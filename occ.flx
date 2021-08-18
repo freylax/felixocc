@@ -8,42 +8,92 @@
 //  fun X: Pnt -> double = "$1.X()";
 //  };
 
+// header foo_body = """
+//   class Foo {
+//   public:
+//     Foo () {}
+//     bool bar() { return true; }
+//   };
+
+// """;
+
+// type Foo = "Foo" requires foo_body;
+// ctor Foo: 1 = "Foo()";
+// fun bar: Foo -> bool = "$1.bar()";
+
 //include "occ/occ";
 include "src/gp";
 include "src/GC";
 include "src/Collection";
+include "src/TopoDS";
+include "src/BRepBuilderAPI";
 
 open gp;
 open Collection;
-//init_occ;
+open GC;
+open Geom;
+open BRepBuilderAPI;
+open TopoDS;
 
 var w = 50.0;
 var h = 70.0;
 var t = 30.0;
 
-var p1 = Pnt( -w / 2.0, 0, 0);
-var p2 = Pnt( -w / 2.0, -t / 4.0, 0);
-var p3 = Pnt(0, -t / 2., 0);
-var p4 = Pnt( w / 2., -t / 4., 0);
-var p5 = Pnt( w / 2., 0, 0);
+var p1 = Pnt( -w / 2.0, 0.0, 0.0);
+var p2 = Pnt( -w / 2.0, -t / 4.0, 0.0);
+var p3 = Pnt(0.0, -t / 2.0, 0.0);
+var p4 = Pnt( w / 2.0, -t / 4.0, 0.0);
+var p5 = Pnt( w / 2.0, 0.0, 0.0);
 
-var aArcOfCircle = ArcOfCircle( p2,p3,p4);
-var aSegment1    = Segment( p1, p2);
-var aSegment2    = Segment( p4, p5);
+var aoc = arcOfCircle p2 p3 p4;
+var seg1    = segment p1 p2;
+var seg2    = segment p4 p5;
+
+//var seg1_:Curve = seg1;
+
+//var edge1 = edge ( seg1);
+//var edge2 = edge ( aoc);
+//var edge3 = edge ( seg2);
+//  	  var wir = wire edge1 edge2 edge3;
+
+// chip writer
+//   connector x
+//     pin out: %>Foo
+// {
+//   for i in 0..<10
+//     perform write (x.out, #Foo);
+// }
+
+// chip reader
+//   connector y
+//     pin inp: %<Foo
+// {
+//   repeat perform  println$ str(  bar( read y.inp) ); 
+// }
+
+// circuit
+//    connect writer.out, reader.inp
+// endcircuit
+
+fun gsh (x:Shape) => x.Reversed;
+
+var sh = gsh #Shape;
+var so = #solid;
+
+println$ "isNull: " + str (sh.IsNull); 
+//println$ "isNull: " + str (sh1.IsNull); 
 
 println$ "X=" + str( p1.X ) + " Y=" + str( p1.Y ) + " Z=" + str( p1.Z );
 
-//open Array1;
 open Array1[int];
 
 var a1 = Array1[int]::createH(0,3);
 //var s = a1.length;
 //println$ "a1.Size=" + str( s );
-open GC;
-open Geom;
-var t = Segment p1 p2;
 
-println$ "Trimmed curve, start=" + t.StartPoint.X.str + ", end=" + t.EndPoint.X.str;
+var seg = segment p1 p2;
+
+println$ "Trimmed curve, start=" + seg.StartPoint.X.str + ", end=" + seg.EndPoint.X.str;
 // if s.IsDone do
 //   var c = s.Value;
 //   println$ "got trimmed Curve";

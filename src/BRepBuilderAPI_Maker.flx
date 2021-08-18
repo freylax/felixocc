@@ -1,0 +1,24 @@
+include "./Maker";
+
+type BRepBuilderAPI_WithoutError = "BRepBuilderAPI_WithoutError"; // dummy type
+
+// class MakerInterface[E]
+// {
+//   fun IsDone[I] : I -> bool = "$1->IsDone()";
+//   fun Error[I] : I ->  E = "$1->Error()";
+//   fun Value[I,O] : I -> O = "(?2) *$1";
+// }
+
+instance Maker::Interface[BRepBuilderAPI_WithoutError] {
+  instance type E = bool;
+  fun IsDone[I] : I -> bool = "true";
+  fun Error[I] : I ->  E = "true";
+  fun Value[I,O] : I -> O = "(?2) *$1";
+}
+
+
+class BRepBuilderAPI_Maker {
+  proc init[I,O] () => #Maker::init[I,I,O];
+  proc initWE[I,O] () => #Maker::init[BRepBuilderAPI_WithoutError,I,O];
+  gen maker[I,O,A] (a:A) => Maker::maker[I,O,A](a);
+}

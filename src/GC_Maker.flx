@@ -1,0 +1,24 @@
+include "./Maker";
+include "occ/gce_ErrorType";
+
+type GC_WithError = "GC_WithError"; // this are just dummy types
+type GC_WithoutError = "GC_WithoutError";
+
+instance Maker::Interface[GC_WithError] {
+  instance type E = gce_ErrorType;
+  fun IsDone[I] : I -> bool = "$1->IsDone()";
+  fun Error[I] : I ->  E = "$1->Status()";
+  fun Value[I,O] : I -> O = "$1->Value()";
+}
+instance Maker::Interface[GC_WithoutError] {
+  instance type E = gce_ErrorType;
+  fun IsDone[I] : I -> bool = "true";
+  fun Error[I] : I ->  E = "gce_Done";
+  fun Value[I,O] : I -> O = "$1->Value()";
+}
+
+class GC_Maker {
+  proc init[I,O] () => #Maker::init[GC_WithError,I,O];
+  proc initWE[I,O] () => #Maker::init[GC_WithoutError,I,O];
+  gen maker[I,O,A] (a:A) => Maker::maker[I,O,A](a);
+}

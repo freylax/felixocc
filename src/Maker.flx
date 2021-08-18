@@ -1,6 +1,5 @@
 header Standard_Failure_hxx = '#include <Standard_Failure.hxx>';
 header Standard_ErrorHandler_hxx = '#include <Standard_ErrorHandler.hxx>';
-//header GC_MakeSegment_hxx = '#include "GC_MakeSegment.hxx"';
 
 body static_store_bdy = """
   template< typename U, typename T> T* static_store() { static T t; return &t; }
@@ -8,42 +7,50 @@ body static_store_bdy = """
 
 gen static_store[U,T]: 1 -> &T = "static_store<?1,?2>();" requires static_store_bdy;
 
-//include "occ/gp_Pnt";
-include "occ/gce_ErrorType";
-//include "occ/Geom_TrimmedCurve";
+fun createSharedPtr[T]: T -> shared_ptr[T] = "shared_ptr<?1>(new (?1)($1))";
 
-class GC_Impl {
-  //requires package "TKGeomBase";
-  
+class Maker
+{
+
   type exception = "Standard_Failure" requires Standard_Failure_hxx,Standard_ErrorHandler_hxx;
   instance Str[exception] { fun str(e:exception) = { return "Standard_Failure";};} 
 
-  private chip factory [I,O]
-    connector io
-      pin inp: %<I
-      pin out: %>O
+
+  class Interface[M]
   {
-    fun IsDone : I -> bool = "$1->IsDone()";
-    fun Status : I -> gce_ErrorType = "$1->Status()";
-    fun Value : I -> O = "$1->Value()";
-    var v = read io.inp;
-    if v.IsDone do write (io.out, v.Value); 
-    else write (w_gce_Error, v.Status); done
+    virtual type E;
+    virtual fun IsDone[I] : I -> bool;
+    virtual fun Error[I] : I -> E;
+    virtual fun Value[I,O] : I -> O;
   }
 
+  private chip factory [M,I,O]
+    connector io
+      pin inp: %<I
+      pin out: %>shared_ptr[O]  // shared_ptr is used to wrap the objects with might have
+                                // their own memory management DEFINE_STANDARD_ALLOC
+				// is not necessary for Handles, right now these are wrapped too.
+  {
+    //open Interface[M]; 
+    var v = read io.inp;
+    if Interface[M]::IsDone( v) do write (io.out, createSharedPtr[O]( Interface[M]::Value[I,O]( v))); 
+    else println$ "Error: " + str( Interface[M]::Error[I]( v)); done
+  }
+ 
   private struct Res[I,O] {
     ri:ischannel[shared_ptr[I]];
     wi:oschannel[shared_ptr[I]];
-    ro:ischannel[O];
-    wo:oschannel[O];
+    ro:ischannel[shared_ptr[O]];
+    wo:oschannel[shared_ptr[O]];
   };
 
-  proc init[I,O] () {
+  proc init[M,I,O] () {
     typedef Is = shared_ptr[I];
+    typedef Os = shared_ptr[O];
     var x: &Res[I,O] = #static_store[I,Res[I,O]];
     x.ri, x.wi <- #mk_ioschannel_pair[Is];
-    x.ro, x.wo <- #mk_ioschannel_pair[O];
-    device f = factory[Is,O];
+    x.ro, x.wo <- #mk_ioschannel_pair[Os];     
+    device f = factory[M,Is,O];
     circuit
       wire x*.ri to f.inp
       wire x*.wo to f.out
@@ -59,15 +66,11 @@ class GC_Impl {
       cstmt 'OCC_CATCH_SIGNALS';
       i = shared_ptr( cnew[I,A] ( a));
       write( x*.wi, i);
-      return read x*.ro;
+      return deref( read x*.ro);
     catch
       e:exception => cstmt 'std::cout << "error:" << e.GetMessageString() << std::endl';
       noreturn cstmt "exit(0);";
     endtry
   }
 
-  //open Geom_TrimmedCurve;
-  //type GC_MakeSegment = "GC_MakeSegment" requires GC_MakeSegment_hxx;
-  //#init[GC_MakeSegment,TrimmedCurve];
-  //gen segment (p1:Pnt) (p2:Pnt) => maker[GC_MakeSegment,TrimmedCurve](p1,p2); 
-} 
+}
