@@ -495,12 +495,14 @@ bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& 
     d << indent(tu.currentIndent) << "class " << ct.ftype
       << "_[" << ct.classHierarchyTypeVar << "] {" << endl;
     ++tu.currentIndent;
+    list<string> bases;
     for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
       FType ft = trType(b->getType());
+      if( ct.inClass == ft.inClass) tu.dpTypes.insert( ft.name);
+      const string ft_ = inClassType( ft, ct, false,tu);
+      bases.push_back( ft_);
       d << indent(tu.currentIndent)
-	<< "inherit " << inClassType( ft, ct, false,tu) << "_[" << ct.classHierarchyTypeVar << "];" << endl;
-      if( ct.inClass == ft.inClass)
-	tu.dpTypes.insert( ft.name);
+	<< "inherit " << ft_ << "_[" << ct.classHierarchyTypeVar << "];" << endl;
     }
     // here come the member defs
     // and after them
@@ -512,6 +514,11 @@ bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& 
 		 << "_[" << ct.ftype << "] {}" << endl;
       eofTypeDef << indent(ind) << "inherit " << ct.ftype
 		 << "_[" << ct.ftype << "];" << endl;
+    }
+    for(auto b = bases.begin(); b != bases.end(); ++b) {
+      eofTypeDef << indent(ind)
+		 << "supertype " << *b << " (x: "
+		 << ct.ftype << ") => C_hack::cast[" << *b << "] x;" << endl;
     }
   } 
   return true;
@@ -610,18 +617,16 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     if ( !rt->isVoidType() )
       frt = inClassType( trType( rt, tu.trTypeLog), ct, true, tu);
     d << indent(tu.currentIndent);
-    if ( frt.empty() )
-      d << "proc ";
-    else if (frt == name)
-      d << "ctor ";
-    else
-      d << "fun ";
+    if ( frt.empty() ) d << "proc ";
+    //else if (frt == name) d << "ctor ";
+    else d << "fun ";
     std::list<string> args_ = args( m, ct, tu);
-    if( tu.dpTypes.find( name) != tu.dpTypes.end()) {
-      // we rename the member name
-      name[0] = tolower(name[0]);
-    }
-    d << name << ": ";
+    //if( tu.dpTypes.find( name) != tu.dpTypes.end()) {
+    // we rename the member name
+    string fname = name;
+    fname[0] = tolower(fname[0]);
+      //}
+    d << fname << ": ";
 
     // if not a static method then first arg is of type ftype
     if( !m->isStatic()) {
@@ -631,7 +636,7 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 	args_.push_front( ct.classHierarchyTypeVar);
     }
     printArgs( args_, d);
-    if ( !rt->isVoidType() && frt != name ) // print return type
+    if ( !rt->isVoidType()/* && frt != name*/ ) // print return type
       d << " -> " << frt;
     d << " = \""; 
     if( m->isStatic()) {
@@ -665,15 +670,15 @@ bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
   auto ind = tu.currentIndent;
-  d << indent(ind) << "cenum " << ct.ftype << " = " << endl;
-  ++ind;
-  d << indent(ind);
+  d << indent(ind) << "type " << ct.ftype << " = \"" << ct.ctype << "\" "
+    << "requires " << tu.headerName << ";" << endl;
   for( auto i = ed->enumerator_begin(); i != ed->enumerator_end(); ++i) {
-    if( i != ed->enumerator_begin()) d << "," << endl << indent(ind);
-    d << i->getNameAsString(); 
+    string cs = i->getNameAsString(); string fs = cs;
+    string::size_type p = fs.find_first_of( '_');
+    if( p != string::npos ) fs = fs.substr(p+1,string::npos);
+    d << indent(ind) << "const " << fs << ": " << ct.ftype << " = \"" << cs << "\";" << endl;
   }
-  d << " requires " << tu.headerName << ";" << endl;
-  --ind;
+  d << indent( ind) << "fun == : " << ct.ftype << " * " << ct.ftype << " -> bool = \"$1==$2\";" << endl;
   d << indent( ind)
     << "instance Str[" << ct.ftype << "] {" << endl;
   ++ind;
@@ -682,9 +687,11 @@ bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
   ++ind;
   for( auto i = ed->enumerator_begin(); i != ed->enumerator_end(); ++i) {
     //if( i != ed->enumerator_begin()) d << "," << endl << indent(ind);
+    string fs = i->getNameAsString(); 
+    string::size_type p = fs.find_first_of( '_');
+    if( p != string::npos ) fs = fs.substr(p+1,string::npos);
     d << indent( ind)
-      << "| $(" << i->getNameAsString() << ") => \""
-      << camelToSpaces(i->getNameAsString()) << "\"" << endl;
+      << "| $(" << fs<< ") => \"" << camelToSpaces(fs) << "\"" << endl;
   }
   d << indent( ind) << ";" << endl;
   --ind; --ind;

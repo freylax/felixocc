@@ -1,27 +1,3 @@
-//include "gp_Pnt.hxx";
-//header gp_Pnt_hxx = '#include "gp_Pnt.hxx"';
-
-//open class Pnt {
-//  requires package "occ";
-//  type Pnt = "gp_Pnt" requires gp_Pnt_hxx;
-//  ctor Pnt : double * double * double = "gp_Pnt($1, $2, $3)";
-//  fun X: Pnt -> double = "$1.X()";
-//  };
-
-// header foo_body = """
-//   class Foo {
-//   public:
-//     Foo () {}
-//     bool bar() { return true; }
-//   };
-
-// """;
-
-// type Foo = "Foo" requires foo_body;
-// ctor Foo: 1 = "Foo()";
-// fun bar: Foo -> bool = "$1.bar()";
-
-//include "occ/occ";
 include "src/gp";
 include "src/GC";
 include "src/Collection";
@@ -45,45 +21,16 @@ var p3 = Pnt(0.0, -t / 2.0, 0.0);
 var p4 = Pnt( w / 2.0, -t / 4.0, 0.0);
 var p5 = Pnt( w / 2.0, 0.0, 0.0);
 
-var aoc = arcOfCircle p2 p3 p4;
-var seg1    = segment p1 p2;
-var seg2    = segment p4 p5;
+var aoc = arcOfCircle ( p2, p3, p4);
+var seg1    = segment ( p1, p2);
+var seg2    = segment ( p4, p5);
 
-//var seg1_:Curve = seg1;
+var edge1 = edge seg1;
+var edge2 = edge aoc;
+var edge3 = edge seg2;
+var wir = wire ( edge1, edge2, edge3);
 
-//var edge1 = edge ( seg1);
-//var edge2 = edge ( aoc);
-//var edge3 = edge ( seg2);
-//  	  var wir = wire edge1 edge2 edge3;
-
-// chip writer
-//   connector x
-//     pin out: %>Foo
-// {
-//   for i in 0..<10
-//     perform write (x.out, #Foo);
-// }
-
-// chip reader
-//   connector y
-//     pin inp: %<Foo
-// {
-//   repeat perform  println$ str(  bar( read y.inp) ); 
-// }
-
-// circuit
-//    connect writer.out, reader.inp
-// endcircuit
-
-fun gsh (x:Shape) => x.Reversed;
-
-var sh = gsh #Shape;
-var so = #solid;
-
-println$ "isNull: " + str (sh.IsNull); 
-//println$ "isNull: " + str (sh1.IsNull); 
-
-println$ "X=" + str( p1.X ) + " Y=" + str( p1.Y ) + " Z=" + str( p1.Z );
+println$ "X=" + str( p1.x ) + " Y=" + str( p1.y ) + " Z=" + str( p1.z );
 
 open Array1[int];
 
@@ -91,9 +38,9 @@ var a1 = Array1[int]::createH(0,3);
 //var s = a1.length;
 //println$ "a1.Size=" + str( s );
 
-var seg = segment p1 p2;
+var seg = segment (p1, p2);
 
-println$ "Trimmed curve, start=" + seg.StartPoint.X.str + ", end=" + seg.EndPoint.X.str;
+println$ "Trimmed curve, start=" + seg.startPoint.x.str + ", end=" + seg.endPoint.x.str;
 // if s.IsDone do
 //   var c = s.Value;
 //   println$ "got trimmed Curve";
