@@ -13,6 +13,8 @@
 #include <fstream>
 #include <unistd.h>
 #include "llvm/Support/Path.h"
+#include "llvm/Support/YAMLTraits.h"
+//#include "llvm/CodeGen/MIRYamlMapping.h"
 
 using namespace std;
 using namespace std::placeholders;
@@ -20,6 +22,13 @@ using namespace llvm;
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;
+using llvm::yaml::Input;
+using llvm::yaml::ScalarEnumerationTraits;
+using llvm::yaml::SequenceElementTraits;
+using llvm::yaml::ScalarBitSetTraits;
+using llvm::yaml::ScalarTraits;
+using llvm::yaml::MappingTraits;
+using llvm::yaml::IO;
 
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
@@ -36,6 +45,18 @@ static cl::opt<std::string> outputDir
   cl::value_desc("output directory"),
   cl::desc("Output directory where the generated files will be put"),
   cl::Required);
+
+static cl::opt<std::string> readYamlCTFile
+( "ry",
+  cl::value_desc("read yaml class translation"),
+  cl::desc("read YAML File which contains the class translation"),
+  cl::Optional); //cl::Required);
+
+static cl::opt<std::string> writeYamlCTFile
+( "wy",
+  cl::value_desc("write yaml class translation"),
+  cl::desc("write YAML File which contains the class translation"),
+  cl::Optional); //cl::Required);
 
 static cl::opt<std::string> TargetClass
 ( "c",
@@ -140,6 +161,16 @@ enum TypeImplementation {
   OccHandle,
   TemplateClassVH,
   Other
+};
+
+template <>
+struct ScalarEnumerationTraits<TypeImplementation> {
+  static void enumeration(IO &io, TypeImplementation &value) {
+    io.enumCase(value, "Value", Value);
+    io.enumCase(value, "OccHandle", OccHandle);
+    io.enumCase(value, "TemplateClassVH", TemplateClassVH);
+    io.enumCase(value, "Other", Other);
+  }
 };
 
 bool checkFor( const string& cl, const TypeImplementation& ti);
@@ -256,7 +287,8 @@ bool trTemplate( const QualType& qt, FType& t) {
 
 bool trTColName( const string& name, FType& t, string& coltype)
 {
-  if( name.compare( 0,4,"TCol" ) == 0) {
+  if( name.compare( 0,4,"TCol" ) == 0 &&
+      name.compare( 0,11,"TCollection" ) != 0) {
     t.inClass = "Collection";
     t.templateClass = true;
     // get the class of the argument
@@ -655,12 +687,16 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 string camelToSpaces( string s) {
   string r;
-  string::size_type p = s.find_first_of( '_');
-  if( p != string::npos ) s = s.substr(p+1,string::npos);
+  //string::size_type p = s.find_first_of( '_');
+  //if( p != string::npos ) s = s.substr(p+1,string::npos);
+  bool lastUpper = true;
   for( int i = 0; i< s.size(); ++i) {
     auto c = s[i];
-    if( i > 0 && isupper( c)) r.push_back( ' ');
-    r.push_back( c);
+    if( c == '_' || (isupper( c) && !lastUpper)) r.push_back( ' ');
+    if( c != '_') {
+      lastUpper = isupper( c);
+      r.push_back( c);
+    }
   }
   return r;
 }
@@ -700,6 +736,104 @@ bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
 }
 
 
+struct FlowString : string {
+  FlowString() = default;
+  FlowString(std::string Value) : string(std::move(Value)) {}
+};
+
+template <> struct ScalarTraits<FlowString> {
+  static void output(const FlowString &S, void *, raw_ostream &OS) {
+    return ScalarTraits<string>::output(S, nullptr, OS);
+  }
+
+  static StringRef input(StringRef Scalar, void *Ctx, FlowString &S) {
+    return ScalarTraits<string>::input(Scalar, Ctx, S);
+  }
+
+  static QuotingType mustQuote(StringRef S) { return needsQuotes(S); }
+};
+
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR( FlowString);
+
+struct TrFlags {
+  static const uint32_t
+  //tfEnum     = 1,
+  //tfFunction = 2,
+  value    = 4,
+    handle   = 8,
+    tvar     = 16,
+    maker    = 32,
+    ctor     = 256,
+    mfct     = 512;
+};
+
+LLVM_YAML_STRONG_TYPEDEF(uint32_t, YFlags)
+
+template <>
+struct ScalarBitSetTraits<YFlags> {
+  static void bitset(IO &io, YFlags &value) {
+    //io.bitSetCase(value, "enum", tfEnum);
+    //io.bitSetCase(value, "func", tfFunction);
+    io.bitSetCase(value, "value", TrFlags::value);
+    io.bitSetCase(value, "handle", TrFlags::handle);
+    io.bitSetCase(value, "tvar", TrFlags::tvar);
+    io.bitSetCase(value, "maker", TrFlags::maker);
+    io.bitSetCase(value, "ctor", TrFlags::ctor);
+    io.bitSetCase(value, "mfct", TrFlags::mfct);
+  }
+};
+
+struct TrNames {
+  TrNames () : flags( 0) {}
+  YFlags          flags;
+  vector<FlowString>  names;
+};
+
+template<>
+struct SequenceElementTraits< TrNames> {
+  static const bool flow = false;
+};
+
+template <>
+struct MappingTraits<TrNames> {
+  static void mapping(IO &io, TrNames &tn) {
+    io.mapRequired("flags", tn.flags);
+    io.mapRequired("names", tn.names);
+  }
+};
+
+
+struct YClassTranslation {
+  YClassTranslation (): defaultFlags(0) {}
+  string targetClass;
+  string package;
+  vector<FlowString> openClasses;
+  vector<FlowString> includes;
+  YFlags defaultFlags;          // if not empty then all files will get this flags by default
+  vector<TrNames> specificFlags; // flags which might differ from default
+  vector<FlowString> excludeNames;   // exclude this names (files,classes etc)   
+};
+
+
+
+template <>
+struct MappingTraits<YClassTranslation> {
+  static void mapping(IO &io, YClassTranslation &ct) {
+    io.mapRequired("target", ct.targetClass);
+    io.mapRequired("package", ct.package);
+    io.mapOptional("open", ct.openClasses);
+    io.mapOptional("include", ct.includes);
+    io.mapOptional("default", ct.defaultFlags);
+    io.mapOptional("specific", ct.specificFlags);
+    io.mapOptional("exclude", ct.excludeNames);
+  }
+};
+
+template<>
+struct SequenceElementTraits< YClassTranslation> {
+  static const bool flow = false;
+};
+
 struct ClassTranslation {
   string targetClass;
   string package;
@@ -711,7 +845,75 @@ struct ClassTranslation {
   list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
   set<string> includeFiles;
   set<string> excludeFiles;
+  uint32_t    defaultFlags;
+  map<string,uint32_t> specificFlags;
+  set<string>          excludeNames;
 };
+
+template<class S,class T> void copy( const S& s, T& t)
+{  t.resize( s.size());  copy( s.begin(), s.end(), t.begin()); }
+ 
+void ctToYaml( const ClassTranslation& ct, YClassTranslation& y)
+{
+  y.targetClass = ct.targetClass;
+  y.package = ct.package;
+  copy( ct.openClasses, y.openClasses);
+  copy( ct.includes, y.includes);
+  uint32_t f = 0;
+  if( ! ct.classHierarchyTypeVar.empty() )
+    f |= TrFlags::tvar;
+  switch( ct.typeImpl) {
+  case Value:           f |= TrFlags::value; break;
+  case OccHandle:       f |= TrFlags::handle; break; 
+  case TemplateClassVH: f |= TrFlags::value | TrFlags::handle | TrFlags::tvar; break;
+  case Other:           f |= TrFlags::maker; break;
+  }
+  y.defaultFlags = f;
+  TrNames n;
+  copy( ct.includeFiles, n.names);
+  y.specificFlags.push_back( n);
+  copy( ct.excludeFiles, y.excludeNames);
+}
+
+void ctToYaml( const list<ClassTranslation>& ct, vector<YClassTranslation>& y)
+{
+  y.resize( ct.size()); int j = 0;
+  for( auto i = ct.begin(); i != ct.end(); ++i, ++j) {
+    ctToYaml( *i, y[j]);
+  }
+}
+
+template< class S> void copy( const S& s, set<string>& t) {
+  for( auto i = s.begin(); i != s.end(); ++i ) {
+    t.insert( *i);
+  }
+}
+
+void yamlToCt( const YClassTranslation& y, ClassTranslation& ct)
+{
+  ct.targetClass = y.targetClass;
+  ct.package = y.package;
+  copy( y.openClasses, ct.openClasses);
+  copy( y.includes, ct.includes);
+  ct.defaultFlags = y.defaultFlags;
+  for( auto i = y.specificFlags.begin(); i !=  y.specificFlags.end(); ++i) {
+    for( auto j = i->names.begin(); j != i->names.end(); ++j) {
+      ct.specificFlags[*j]=i->flags;
+    }
+  }
+  copy( y.excludeNames, ct.excludeNames);
+}
+
+void yamlToCt( const vector<YClassTranslation>& y, list<ClassTranslation>& ct)
+{
+  for( auto i = y.begin(); i != y.end(); ++i) {
+    ClassTranslation ct_;
+    ct.push_back( ct_);
+    yamlToCt( *i, ct.back());
+  }
+}
+
+
 
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
@@ -719,6 +921,7 @@ private:
   shared_ptr<TranslationUnit> tu;
   ClassTranslation ctr;
   bool first = true;
+  set<string> includes;
   
   ClassContext classContext( const string& name) {
     ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.typeImpl==OccHandle,ctr.classHierarchyTypeVar);
@@ -738,7 +941,7 @@ private:
     return ct;
   }
 public :
-  ClassWriter ( const ClassTranslation& ctr_) :ctr( ctr_) {}
+  ClassWriter ( const ClassTranslation& ctr_) :ctr( ctr_), includes(ctr.includes) { }
   virtual void onStartOfTranslationUnit() {
     //std::cout << "startOfTU" << std::endl;
     tu = shared_ptr<TranslationUnit>( new TranslationUnit());
@@ -793,7 +996,7 @@ public :
     //}
     tu->setDeclContext( 0); // pop  up
     for( auto i = tu->dpClasses.begin(); i != tu->dpClasses.end(); ++i) {
-      ctr.includes.insert( *i);
+      includes.insert( *i);
     }
     auto i = tus.begin();
     for( ; i != tus.end(); ++i) {
@@ -847,7 +1050,7 @@ public :
       os << "// " << *i << endl;
     }
     os << "// ---------------------------------------------------------" << endl;
-    for( auto i = ctr.includes.begin(); i != ctr.includes.end(); ++i) {
+    for( auto i = includes.begin(); i != includes.end(); ++i) {
       os << "include \"./" << *i << "\";" << endl;
     }
     for( auto i = tus.begin(); i != tus.end(); ++i) {
@@ -959,32 +1162,39 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 static list<ClassTranslation> classTranslations =
   {
-    {"Collection","TKMath",{"Standard","gp"},{},TemplateClassVH,"T"
-     ,setTypeTemplateVH,{},{"Array1","Array2","Sequence","List"},{}}
-    ,{"gp","TKMath",{"Standard"},{},Value,""
-      ,setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
-    ,{"GeomAbs", "TKG3d",{},{},Value,""
-      ,setType,{},{},{}}
-    ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T"
-      ,setType,{trCtor,trMemberFct},{},
+    {"Collection","TKMath",{"Standard","gp"},{},TemplateClassVH,"T",
+     setTypeTemplateVH,{},{"Array1","Array2","Sequence","List"},{}}
+    ,{"TCollection","TKernel",{"Standard"},{},Value,"",
+      setType,{trCtor,trMemberFct},{"ExtendedString","AsciiString"},{}}
+    ,{"gp","TKMath",{"Standard"},{},Value,"",
+      setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
+    ,{"GeomAbs", "TKG3d",{},{},Value,"",
+      setType,{},{},{}}
+    ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T",
+      setType,{trCtor,trMemberFct},{},
       {"UndefinedDerivative","UndefinedValue","SequenceOfBSplineSurface","HSequenceOfBSplineSurface"}}
-    ,{"Geom2d", "TKG2d",{"gp","Collection"},{"Standard"},OccHandle,"T"
-      ,setType,{trCtor,trMemberFct},{},
+    ,{"Geom2d", "TKG2d",{"gp","Collection"},{"Standard"},OccHandle,"T",
+      setType,{trCtor,trMemberFct},{},
       {"UndefinedDerivative","UndefinedValue"}}
-    ,{"GC", "TKGeomBase",{"Standard","Geom","gp","GC_Maker"},{"GC_Maker","Geom"},Other,""
-      ,setTypeMaker,{trCtorMaker},{},{"Root"}}
+    ,{"GC", "TKGeomBase",{"Standard","Geom","gp","GC_Maker"},{"GC_Maker","Geom"},Other,"",
+      setTypeMaker,{trCtorMaker},{},{"Root"}}
     ,{"TopAbs", "TKBRep",{},{},Value,"",setType,{},{},{}}
     ,{"TopLoc", "TKBRep",{},{},Value,"",setType,{},{},{}}
-    ,{"TopoDS", "TKBRep",{"gp","Collection"},{"Standard"},Value,""
-      ,setType,{trCtor,trMemberFct},
+    ,{"TopoDS", "TKBRep",{"gp","Collection"},{"Standard"},Value,"",
+      setType,{trCtor,trMemberFct},
       {"Shape","Shell","Solid","Iterator","Compound","CompSolid","Edge",
        "Face","Vertex","Wire"},{}}
     ,{"BRepBuilderAPI", "TKTopAlgo",
-      {"Standard","Geom","gp","TopoDS","BRepBuilderAPI_Maker"},{"BRepBuilderAPI_Maker","Geom"},Other,""
-      ,setTypeMaker,{trCtorMaker},
+      {"Standard","Geom","gp","TopoDS","BRepBuilderAPI_Maker"},{"BRepBuilderAPI_Maker","Geom"},Other,"",
+      setTypeMaker,{trCtorMaker},
       { "MakeEdge2d","MakeEdge","MakeFace","MakePolygon","MakeShape","MakeShell","MakeSolid","MakeVertex","MakeWire",
 	"EdgeError","WireError","FaceError", "PipeError","ShellError"},
       {/*"Sewing","VertexInspector"*/}}
+    ,{"Aspect", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "DisplayConnection","XAtom"},{}}
+    ,{"OpenGl", "TKOpenGl",{},{},OccHandle,"",setType,{trCtor},{ "GraphicDriver"},{}}
+    ,{"V3d", "TKV3d", {},{},OccHandle,"",setType,{trCtor},{"Viewer","AmbientLight","DirectionalLight"},{}}
+    ,{"Quantity", "TKernel",{},{},Value,"",setType,{trCtor,trMemberFct},{ "Color"},{}}
+    ,{"Graphic3d", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "Group","Structure","GraphicDriver","TypeOfShadingModel"},{}}
     
   };
 
@@ -1012,6 +1222,59 @@ int main(int argc, const char **argv) {
   iFlag << "-I" << std::string( occIncDir.str());
   std::string flags[] = { iFlag.str(), "-std=c++0x" };
   FixedCompilationDatabase cdb( realOccDir.str(), flags);
+
+  // ---------------- read yaml ----
+  if( ! readYamlCTFile.empty()) {
+    auto yamlCtrReader = MemoryBuffer::getFile( readYamlCTFile, true);
+    if (error_code errc = yamlCtrReader.getError()) {
+      llvm::errs() << "error opening yaml class translation file " << readYamlCTFile << '\n';
+      llvm::errs() << errc.message() << '\n';
+      // MemoryBuffer does not need to be closed
+      return EXIT_FAILURE;
+    } else {
+      llvm::outs() << "opening yaml class translation file " << readYamlCTFile << '\n';
+    }
+
+    /* Create the YAML Input */
+    // dereference once to strip away the llvm::ErrorOr
+    // dereference twice to strip away the std::unique_ptr
+    Input yamlCtr(**yamlCtrReader);
+    if (error_code errc = yamlCtr.error()) {
+      llvm::errs() << "error reading yaml class translation file " << readYamlCTFile << '\n';
+      llvm::outs() << errc.message() << '\n';
+      // MemoryBuffer does not need to be closed
+      return EXIT_FAILURE;
+    }
+
+  }
+
+  //////////////////////////////////
+  if( ! writeYamlCTFile.empty()) {
+    error_code errc;
+    raw_fd_ostream writer( writeYamlCTFile, errc);
+    if (errc) {
+      llvm::errs() << "error writing yaml output file " << writeYamlCTFile << '\n';
+      llvm::errs() << errc.message() << '\n';
+      writer.close();
+      return EXIT_FAILURE;
+    } else {
+      llvm::outs() << "opening yaml output file " << writeYamlCTFile << '\n';
+    }
+    /* Create the YAML Output */
+    llvm::yaml::Output yout(writer);
+
+    vector<YClassTranslation> y;
+    cout << "start class trans copy" << endl;
+    ctToYaml( classTranslations, y);
+    cout << "end class trans" << endl;
+    
+    /* Writing output into file */
+    yout << y;
+    llvm::outs() << "writing YAML output into file " << writeYamlCTFile << '\n';
+
+    writer.close();
+  }
+  
   std::map<std::string,std::list<std::string>> groupedFiles;
   //  std::map<std::string,std::list<std::string>> tcolHFiles;  // mapping Container->files 
   std::error_code EC;
