@@ -814,8 +814,6 @@ struct YClassTranslation {
   vector<FlowString> excludeNames;   // exclude this names (files,classes etc)   
 };
 
-
-
 template <>
 struct MappingTraits<YClassTranslation> {
   static void mapping(IO &io, YClassTranslation &ct) {
@@ -823,7 +821,7 @@ struct MappingTraits<YClassTranslation> {
     io.mapRequired("package", ct.package);
     io.mapOptional("open", ct.openClasses);
     io.mapOptional("include", ct.includes);
-    io.mapOptional("default", ct.defaultFlags);
+    io.mapOptional("default", ct.defaultFlags, 0);
     io.mapOptional("specific", ct.specificFlags);
     io.mapOptional("exclude", ct.excludeNames);
   }
@@ -833,6 +831,12 @@ template<>
 struct SequenceElementTraits< YClassTranslation> {
   static const bool flow = false;
 };
+
+//LLVM_YAML_IS_SEQUENCE_VECTOR( YClassTranslation);
+
+typedef vector< YClassTranslation> YClassTranslations;
+
+LLVM_YAML_IS_SEQUENCE_VECTOR( YClassTranslations);
 
 struct ClassTranslation {
   string targetClass;
@@ -859,20 +863,34 @@ void ctToYaml( const ClassTranslation& ct, YClassTranslation& y)
   y.package = ct.package;
   copy( ct.openClasses, y.openClasses);
   copy( ct.includes, y.includes);
-  uint32_t f = 0;
-  if( ! ct.classHierarchyTypeVar.empty() )
-    f |= TrFlags::tvar;
-  switch( ct.typeImpl) {
-  case Value:           f |= TrFlags::value; break;
-  case OccHandle:       f |= TrFlags::handle; break; 
-  case TemplateClassVH: f |= TrFlags::value | TrFlags::handle | TrFlags::tvar; break;
-  case Other:           f |= TrFlags::maker; break;
+  // uint32_t f = 0;
+  // if( ! ct.classHierarchyTypeVar.empty() )
+  //   f |= TrFlags::tvar;
+  // switch( ct.typeImpl) {
+  // case Value:           f |= TrFlags::value; break;
+  // case OccHandle:       f |= TrFlags::handle; break; 
+  // case TemplateClassVH: f |= TrFlags::value | TrFlags::handle | TrFlags::tvar; break;
+  // case Other:           f |= TrFlags::maker; break;
+  // }
+  // y.defaultFlags = f;
+  y.defaultFlags = ct.defaultFlags;
+  y.specificFlags.clear();
+  for( auto i = ct.specificFlags.begin(); i != ct.specificFlags.end(); ++i ) {
+    auto j = y.specificFlags.begin();
+    while ( j != y.specificFlags.end()) {
+      if( j->flags == i->second ) {
+	j->names.push_back( i->first);
+	break;
+      } else ++j;
+    }
+    if( j == y.specificFlags.end()) {
+      TrNames n;
+      n.flags = i->second;
+      n.names.push_back( i->first);
+      y.specificFlags.push_back( n);
+    }
   }
-  y.defaultFlags = f;
-  TrNames n;
-  copy( ct.includeFiles, n.names);
-  y.specificFlags.push_back( n);
-  copy( ct.excludeFiles, y.excludeNames);
+  copy( ct.excludeNames, y.excludeNames);
 }
 
 void ctToYaml( const list<ClassTranslation>& ct, vector<YClassTranslation>& y)
@@ -1160,43 +1178,44 @@ bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 
 
 
-static list<ClassTranslation> classTranslations =
-  {
-    {"Collection","TKMath",{"Standard","gp"},{},TemplateClassVH,"T",
-     setTypeTemplateVH,{},{"Array1","Array2","Sequence","List"},{}}
-    ,{"TCollection","TKernel",{"Standard"},{},Value,"",
-      setType,{trCtor,trMemberFct},{"ExtendedString","AsciiString"},{}}
-    ,{"gp","TKMath",{"Standard"},{},Value,"",
-      setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
-    ,{"GeomAbs", "TKG3d",{},{},Value,"",
-      setType,{},{},{}}
-    ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T",
-      setType,{trCtor,trMemberFct},{},
-      {"UndefinedDerivative","UndefinedValue","SequenceOfBSplineSurface","HSequenceOfBSplineSurface"}}
-    ,{"Geom2d", "TKG2d",{"gp","Collection"},{"Standard"},OccHandle,"T",
-      setType,{trCtor,trMemberFct},{},
-      {"UndefinedDerivative","UndefinedValue"}}
-    ,{"GC", "TKGeomBase",{"Standard","Geom","gp","GC_Maker"},{"GC_Maker","Geom"},Other,"",
-      setTypeMaker,{trCtorMaker},{},{"Root"}}
-    ,{"TopAbs", "TKBRep",{},{},Value,"",setType,{},{},{}}
-    ,{"TopLoc", "TKBRep",{},{},Value,"",setType,{},{},{}}
-    ,{"TopoDS", "TKBRep",{"gp","Collection"},{"Standard"},Value,"",
-      setType,{trCtor,trMemberFct},
-      {"Shape","Shell","Solid","Iterator","Compound","CompSolid","Edge",
-       "Face","Vertex","Wire"},{}}
-    ,{"BRepBuilderAPI", "TKTopAlgo",
-      {"Standard","Geom","gp","TopoDS","BRepBuilderAPI_Maker"},{"BRepBuilderAPI_Maker","Geom"},Other,"",
-      setTypeMaker,{trCtorMaker},
-      { "MakeEdge2d","MakeEdge","MakeFace","MakePolygon","MakeShape","MakeShell","MakeSolid","MakeVertex","MakeWire",
-	"EdgeError","WireError","FaceError", "PipeError","ShellError"},
-      {/*"Sewing","VertexInspector"*/}}
-    ,{"Aspect", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "DisplayConnection","XAtom"},{}}
-    ,{"OpenGl", "TKOpenGl",{},{},OccHandle,"",setType,{trCtor},{ "GraphicDriver"},{}}
-    ,{"V3d", "TKV3d", {},{},OccHandle,"",setType,{trCtor},{"Viewer","AmbientLight","DirectionalLight"},{}}
-    ,{"Quantity", "TKernel",{},{},Value,"",setType,{trCtor,trMemberFct},{ "Color"},{}}
-    ,{"Graphic3d", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "Group","Structure","GraphicDriver","TypeOfShadingModel"},{}}
+static list<ClassTranslation> classTranslations;
+// =
+//   {
+//     {"Collection","TKMath",{"Standard","gp"},{},TemplateClassVH,"T",
+//      setTypeTemplateVH,{},{"Array1","Array2","Sequence","List"},{}}
+//     ,{"TCollection","TKernel",{"Standard"},{},Value,"",
+//       setType,{trCtor,trMemberFct},{"ExtendedString","AsciiString"},{}}
+//     ,{"gp","TKMath",{"Standard"},{},Value,"",
+//       setType,{trCtor,trMemberFct},{},{"VectorWithNullMagnitude"}}
+//     ,{"GeomAbs", "TKG3d",{},{},Value,"",
+//       setType,{},{},{}}
+//     ,{"Geom", "TKG3d",{"gp","Collection"},{"Standard"},OccHandle,"T",
+//       setType,{trCtor,trMemberFct},{},
+//       {"UndefinedDerivative","UndefinedValue","SequenceOfBSplineSurface","HSequenceOfBSplineSurface"}}
+//     ,{"Geom2d", "TKG2d",{"gp","Collection"},{"Standard"},OccHandle,"T",
+//       setType,{trCtor,trMemberFct},{},
+//       {"UndefinedDerivative","UndefinedValue"}}
+//     ,{"GC", "TKGeomBase",{"Standard","Geom","gp","GC_Maker"},{"GC_Maker","Geom"},Other,"",
+//       setTypeMaker,{trCtorMaker},{},{"Root"}}
+//     ,{"TopAbs", "TKBRep",{},{},Value,"",setType,{},{},{}}
+//     ,{"TopLoc", "TKBRep",{},{},Value,"",setType,{},{},{}}
+//     ,{"TopoDS", "TKBRep",{"gp","Collection"},{"Standard"},Value,"",
+//       setType,{trCtor,trMemberFct},
+//       {"Shape","Shell","Solid","Iterator","Compound","CompSolid","Edge",
+//        "Face","Vertex","Wire"},{}}
+//     ,{"BRepBuilderAPI", "TKTopAlgo",
+//       {"Standard","Geom","gp","TopoDS","BRepBuilderAPI_Maker"},{"BRepBuilderAPI_Maker","Geom"},Other,"",
+//       setTypeMaker,{trCtorMaker},
+//       { "MakeEdge2d","MakeEdge","MakeFace","MakePolygon","MakeShape","MakeShell","MakeSolid","MakeVertex","MakeWire",
+// 	"EdgeError","WireError","FaceError", "PipeError","ShellError"},
+//       {/*"Sewing","VertexInspector"*/}}
+//     ,{"Aspect", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "DisplayConnection","XAtom"},{}}
+//     ,{"OpenGl", "TKOpenGl",{},{},OccHandle,"",setType,{trCtor},{ "GraphicDriver"},{}}
+//     ,{"V3d", "TKV3d", {},{},OccHandle,"",setType,{trCtor},{"Viewer","AmbientLight","DirectionalLight"},{}}
+//     ,{"Quantity", "TKernel",{},{},Value,"",setType,{trCtor,trMemberFct},{ "Color"},{}}
+//     ,{"Graphic3d", "TKService",{},{},OccHandle,"",setType,{trCtor,trMemberFct},{ "Group","Structure","GraphicDriver","TypeOfShadingModel"},{}}
     
-  };
+//   };
 
 bool checkFor( const string& cl, const TypeImplementation& ti) {
   for( auto ctr = classTranslations.begin(); ctr != classTranslations.end(); ++ctr) {
@@ -1225,7 +1244,7 @@ int main(int argc, const char **argv) {
 
   // ---------------- read yaml ----
   if( ! readYamlCTFile.empty()) {
-    auto yamlCtrReader = MemoryBuffer::getFile( readYamlCTFile, true);
+    auto yamlCtrReader = MemoryBuffer::getFile( readYamlCTFile);//, true);
     if (error_code errc = yamlCtrReader.getError()) {
       llvm::errs() << "error opening yaml class translation file " << readYamlCTFile << '\n';
       llvm::errs() << errc.message() << '\n';
@@ -1234,10 +1253,21 @@ int main(int argc, const char **argv) {
     } else {
       llvm::outs() << "opening yaml class translation file " << readYamlCTFile << '\n';
     }
-
+    const char* inp = R"(
+---
+- target:          Collection
+  package:         TKMath
+  open:            [ Standard, gp ]
+  default:         [ value, handle, tvar ]
+  specific:
+    - flags:           [  ]
+      names:           [ Array1, Array2, List, Sequence ]
+)";
+    
     /* Create the YAML Input */
     // dereference once to strip away the llvm::ErrorOr
     // dereference twice to strip away the std::unique_ptr
+    //    Input yamlCtr(inp); //
     Input yamlCtr(**yamlCtrReader);
     if (error_code errc = yamlCtr.error()) {
       llvm::errs() << "error reading yaml class translation file " << readYamlCTFile << '\n';
@@ -1245,7 +1275,18 @@ int main(int argc, const char **argv) {
       // MemoryBuffer does not need to be closed
       return EXIT_FAILURE;
     }
-
+    //vector<YClassTranslation> y;
+    YClassTranslations y;
+    //vector< YClassTranslations> y;
+    yamlCtr >> y;
+    if (error_code errc = yamlCtr.error()) {
+      llvm::errs() << "error parsing YAML input from file " << readYamlCTFile << '\n';
+      llvm::errs() << errc.message() << '\n';
+      return EXIT_FAILURE;
+    } else {
+      llvm::outs() << "parsing YAML input from file " << readYamlCTFile << '\n';
+      yamlToCt( y/*[0]*/, classTranslations);
+    }
   }
 
   //////////////////////////////////
