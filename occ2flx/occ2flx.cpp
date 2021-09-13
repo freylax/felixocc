@@ -155,6 +155,17 @@ template<class T> string dumpToStr(const T& t) {
   return s;
 }
 
+struct TrFlags {
+  static const uint32_t
+  //tfEnum     = 1,
+  //tfFunction = 2,
+  value    = 4,
+    handle   = 8,
+    tvar     = 16,
+    maker    = 32,
+    ctor     = 256,
+    mfct     = 512;
+};
 
 enum TypeImplementation {
   Value,
@@ -162,6 +173,8 @@ enum TypeImplementation {
   TemplateClassVH,
   Other
 };
+
+bool test( uint32_t f, uint32_t mask) { return (f & mask) == mask; }
 
 template <>
 struct ScalarEnumerationTraits<TypeImplementation> {
@@ -173,7 +186,7 @@ struct ScalarEnumerationTraits<TypeImplementation> {
   }
 };
 
-bool checkFor( const string& cl, const TypeImplementation& ti);
+uint32_t flags( const string& cl, const string& cname);
 
 bool trTemplate( const QualType& qt, FType& t);
 
@@ -243,9 +256,11 @@ bool trTemplate( const QualType& qt, FType& t) {
   if( auto st = qt->getAs<TemplateSpecializationType>()) {
     t.log += "ts,";
     string tn = dumpToStr( st->getTemplateName());
-    if( tn == "handle" ) { 
-      FType p = trType(st->getArg(0).getAsType());
-      if( checkFor( p.inClass, OccHandle)) {
+    if( tn == "handle" ) {
+      auto ct = st->getArg(0).getAsType();
+      FType p = trType( ct);
+      const uint32_t f = flags( p.inClass, ct.getAsString());
+      if( test( f, TrFlags::handle) && !test( f, TrFlags::value)) {
 	// these types will always be implemented as handle
 	t.log += "hd,";	
 	t.name = p.name;
@@ -435,16 +450,18 @@ class ClassContext {
 public:
   const string& inClass;
   const set<string>& openClasses;
+  uint32_t flags;
   string ftype;
   string ctype;
   bool handle;
   string classHierarchyTypeVar; 
   ClassContext( const string& inClass_,
 		const set<string>& openClasses_,
-		bool handle_,
-		const string& classHierarchyTypeVar_) :
+		const uint32_t& flags_) :
     inClass( inClass_), openClasses( openClasses_),
-    handle(handle_), classHierarchyTypeVar( classHierarchyTypeVar_) {}
+    flags( flags_),
+    handle( (flags & TrFlags::handle ) == TrFlags::handle),
+    classHierarchyTypeVar( ( (flags & TrFlags::tvar) == TrFlags::tvar) ? "T" : "") {}
 };
 
 string inClassType( const FType& ft, const ClassContext& ct, const bool& isRetType, TranslationUnit& tu) {
@@ -735,6 +752,82 @@ bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
   return true;
 }
 
+static string makerRetType;
+
+bool setTypeMaker( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
+  makerRetType.clear();
+  string makerErrorType;
+  string n = ct.ftype;
+  bool error = false;
+  bool gcClass = false;
+  if(n.find( "Make") == 0) n = ct.ftype.substr( 4);
+  else return false;
+  for( auto mi = rd->method_begin(); mi != rd->method_end(); ++mi) {
+    const CXXMethodDecl* m = mi.operator*();
+    const CXXConversionDecl* cd = dynamic_cast<CXXConversionDecl*>(mi.operator*());
+    if( cd != 0) {
+      FType ft = trType( cd->getConversionType(), tu.trTypeLog);
+      makerRetType = ft.name;
+    } else if( m->getNameAsString() == "Error" ) {
+      FType ft = trType( m->getReturnType(), tu.trTypeLog);
+      if( ct.inClass == ft.inClass)
+	tu.dpTypes.insert( ft.name);
+      makerErrorType = ft.name;
+      error = true;
+    } else if( m->getNameAsString() == "Value" ) {
+      gcClass = true;
+    }
+  }
+  setType( rd, ct, tu);
+  bool withoutError = ( gcClass && rd->bases_begin() == rd->bases_end())
+    || !error; // no base class
+  *tu.def << indent(tu.currentIndent) << "#init";
+  if( withoutError) *tu.def << "WE";
+  *tu.def << "[" << ct.ftype << "," << makerRetType << "];" << endl;
+  if( error) {
+    auto& eofTypeDef = *tu.eofTypeDef;
+    eofTypeDef << indent( tu.currentIndent)
+	       << "instance Maker::Interface[" << ct.ftype << "] {" << endl
+	       << indent( tu.currentIndent+1)
+	       << "instance type E = " << makerErrorType << ";" << endl
+	       << indent( tu.currentIndent+1)
+	       << "fun IsDone[I] : I -> bool = \"$1->IsDone()\";" << endl
+	       << indent( tu.currentIndent+1)      
+	       << "fun Error[I] : I ->  E = \"$1->Error()\";" << endl
+    	       << indent( tu.currentIndent+1)
+	       << "fun Value[I,O] : I -> O = \"(?2) *$1\";" << endl
+  	       << indent( tu.currentIndent)
+	       << "}" << endl;
+  }
+  return true;
+}
+
+bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
+  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
+    if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
+    auto& d = *tu.def;
+    string n = ct.ftype;
+    if( ct.ftype.find( "Make") == 0) n = ct.ftype.substr( 4);
+    n[0]=tolower(n[0]);
+    d << indent(tu.currentIndent) << "fun " << n << " ";
+    auto args_ = namedArgs( m, ct, tu);
+    d << "(";
+    for( auto a = args_.begin(); a != args_.end(); ++a) {
+      if( a != args_.begin()) d << ", ";
+      d << a->first << ":" << a->second;
+    }
+    d << ") ";
+    d << "=> maker[" << ct.ftype << "," << makerRetType << "](";
+    for( auto a = args_.begin(); a != args_.end(); ++a) {
+      if( a != args_.begin()) d << ",";
+      d << a->first;
+    }
+    d << ");" << endl;
+    return true;
+  } else return false;
+}
+
+// yamelize
 
 struct FlowString : string {
   FlowString() = default;
@@ -755,17 +848,6 @@ template <> struct ScalarTraits<FlowString> {
 
 LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR( FlowString);
 
-struct TrFlags {
-  static const uint32_t
-  //tfEnum     = 1,
-  //tfFunction = 2,
-  value    = 4,
-    handle   = 8,
-    tvar     = 16,
-    maker    = 32,
-    ctor     = 256,
-    mfct     = 512;
-};
 
 LLVM_YAML_STRONG_TYPEDEF(uint32_t, YFlags)
 
@@ -843,15 +925,27 @@ struct ClassTranslation {
   string package;
   set<string> openClasses;
   set<string> includes;
-  TypeImplementation typeImpl;
-  string classHierarchyTypeVar;
-  function<bool( const CXXRecordDecl*,const ClassContext&, TranslationUnit&)> typeTr;
-  list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
-  set<string> includeFiles;
-  set<string> excludeFiles;
+  //TypeImplementation typeImpl;
+  //string classHierarchyTypeVar;
+  //function<bool( const CXXRecordDecl*,const ClassContext&, TranslationUnit&)> typeTr;
+  //list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
+  //set<string> includeFiles;
+  //set<string> excludeFiles;
   uint32_t    defaultFlags;
   map<string,uint32_t> specificFlags;
   set<string>          excludeNames;
+  uint32_t flags ( const string& cname) const {
+    const string::size_type p = cname.find_first_of( '_');
+    const string n = ( p != string::npos ) ? cname.substr( p+1, string::npos) : ".";
+    auto i = specificFlags.find( n);
+    if( i != specificFlags.end()) return i->second;
+    else {
+      auto j = excludeNames.find( n);
+      if( j != excludeNames.end()) return 0;
+      else return defaultFlags;	
+    }
+  }
+  
 };
 
 template<class S,class T> void copy( const S& s, T& t)
@@ -932,7 +1026,6 @@ void yamlToCt( const vector<YClassTranslation>& y, list<ClassTranslation>& ct)
 }
 
 
-
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
   list<shared_ptr<TranslationUnit>> tus;
@@ -942,7 +1035,7 @@ private:
   set<string> includes;
   
   ClassContext classContext( const string& name) {
-    ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.typeImpl==OccHandle,ctr.classHierarchyTypeVar);
+    ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.flags( name));
     ct.ctype = name;
     string::size_type p = ct.ctype.find_first_of( '_');
     if( p != string::npos ) {
@@ -987,12 +1080,30 @@ public :
       //first = false;
       ClassContext ct = classContext( rd->getDeclName().getAsString());
       //std::cout << "run" << std::endl;
-      
-      if( ctr.typeTr( rd, ct, *tu)) {
+      bool c = false; bool mk = false; bool vh = false;
+      list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
+      if( test( ct.flags, TrFlags::value | TrFlags::handle | TrFlags::tvar) ) {
+	c = setTypeTemplateVH( rd, ct, *tu);
+      } else if( test( ct.flags, TrFlags::maker)) {
+	mk = true;
+	c = setTypeMaker( rd, ct, *tu);
+      } else if( test( ct.flags, TrFlags::value) || test( ct.flags, TrFlags::handle)) {
+	vh = true;
+	c = setType( rd, ct, *tu);
+      }
+      if( c) {
+	if( mk && test( ct.flags, TrFlags::ctor))
+	  mfTr.push_back( trCtorMaker);
+	else if( vh) {
+	  if( test( ct.flags, TrFlags::ctor))
+	    mfTr.push_back( trCtor);
+	  if( test( ct.flags, TrFlags::mfct)) 
+	    mfTr.push_back( trMemberFct);
+	}
 	// methods
 	for( auto mi = rd->method_begin(); mi != rd->method_end(); ++mi) {
-	  const CXXMethodDecl* m = mi.operator*();
-	  for( auto tr = ctr.mfTr.begin(); tr != ctr.mfTr.end(); ++tr) {
+	  const CXXMethodDecl* m = mi.operator*();	  
+	  for( auto tr = mfTr.begin(); tr != mfTr.end(); ++tr) {
 	    if( (*tr)( m, ct, *tu)) break;
 	  }
 	}
@@ -1101,80 +1212,6 @@ public :
   }
 };
 
-static string makerRetType;
-
-bool setTypeMaker( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
-  makerRetType.clear();
-  string makerErrorType;
-  string n = ct.ftype;
-  bool error = false;
-  bool gcClass = false;
-  if(n.find( "Make") == 0) n = ct.ftype.substr( 4);
-  else return false;
-  for( auto mi = rd->method_begin(); mi != rd->method_end(); ++mi) {
-    const CXXMethodDecl* m = mi.operator*();
-    const CXXConversionDecl* cd = dynamic_cast<CXXConversionDecl*>(mi.operator*());
-    if( cd != 0) {
-      FType ft = trType( cd->getConversionType(), tu.trTypeLog);
-      makerRetType = ft.name;
-    } else if( m->getNameAsString() == "Error" ) {
-      FType ft = trType( m->getReturnType(), tu.trTypeLog);
-      if( ct.inClass == ft.inClass)
-	tu.dpTypes.insert( ft.name);
-      makerErrorType = ft.name;
-      error = true;
-    } else if( m->getNameAsString() == "Value" ) {
-      gcClass = true;
-    }
-  }
-  setType( rd, ct, tu);
-  bool withoutError = ( gcClass && rd->bases_begin() == rd->bases_end())
-    || !error; // no base class
-  *tu.def << indent(tu.currentIndent) << "#init";
-  if( withoutError) *tu.def << "WE";
-  *tu.def << "[" << ct.ftype << "," << makerRetType << "];" << endl;
-  if( error) {
-    auto& eofTypeDef = *tu.eofTypeDef;
-    eofTypeDef << indent( tu.currentIndent)
-	       << "instance Maker::Interface[" << ct.ftype << "] {" << endl
-	       << indent( tu.currentIndent+1)
-	       << "instance type E = " << makerErrorType << ";" << endl
-	       << indent( tu.currentIndent+1)
-	       << "fun IsDone[I] : I -> bool = \"$1->IsDone()\";" << endl
-	       << indent( tu.currentIndent+1)      
-	       << "fun Error[I] : I ->  E = \"$1->Error()\";" << endl
-    	       << indent( tu.currentIndent+1)
-	       << "fun Value[I,O] : I -> O = \"(?2) *$1\";" << endl
-  	       << indent( tu.currentIndent)
-	       << "}" << endl;
-  }
-  return true;
-}
-
-bool trCtorMaker( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
-  if (const CXXConstructorDecl* c = dyn_cast<CXXConstructorDecl>(m)) {    
-    if(c->isCopyConstructor() || c->isMoveConstructor()) return true;
-    auto& d = *tu.def;
-    string n = ct.ftype;
-    if( ct.ftype.find( "Make") == 0) n = ct.ftype.substr( 4);
-    n[0]=tolower(n[0]);
-    d << indent(tu.currentIndent) << "fun " << n << " ";
-    auto args_ = namedArgs( m, ct, tu);
-    d << "(";
-    for( auto a = args_.begin(); a != args_.end(); ++a) {
-      if( a != args_.begin()) d << ", ";
-      d << a->first << ":" << a->second;
-    }
-    d << ") ";
-    d << "=> maker[" << ct.ftype << "," << makerRetType << "](";
-    for( auto a = args_.begin(); a != args_.end(); ++a) {
-      if( a != args_.begin()) d << ",";
-      d << a->first;
-    }
-    d << ");" << endl;
-    return true;
-  } else return false;
-}
 
 
 
@@ -1217,12 +1254,12 @@ static list<ClassTranslation> classTranslations;
     
 //   };
 
-bool checkFor( const string& cl, const TypeImplementation& ti) {
+uint32_t flags( const string& cl, const string& cname) {
   for( auto ctr = classTranslations.begin(); ctr != classTranslations.end(); ++ctr) {
     if( cl != ctr->targetClass) continue;
-    return ctr->typeImpl == ti;
+    return ctr->flags( cname);
   }
-  return false;
+  return 0;
 }
 
 
@@ -1377,14 +1414,9 @@ int main(int argc, const char **argv) {
     for( auto i = files_.begin(); i != files_.end(); ++i) {
       string::size_type p = i->find_last_of( '_');
       string::size_type q = i->find_last_of( '.');
-      string s;
-      if( p != string::npos && q != string::npos ) {
-	s = i->substr( p+1, q-p-1);
-	//cout << *i << " : [" << s << "]" << endl;
-      }
-      if( (!ctr->includeFiles.empty() && ctr->includeFiles.find(s)!=ctr->includeFiles.end()) ||
-	  (!ctr->excludeFiles.empty() && ctr->excludeFiles.find(s)==ctr->excludeFiles.end()) ||
-	  (ctr->includeFiles.empty() && ctr->excludeFiles.empty())) {
+      string s = ( p != string::npos && q != string::npos ) ? i->substr( p+1, q-p-1) : ".";
+      if( ( ctr->defaultFlags==0 && ctr->specificFlags.find(s) != ctr->specificFlags.end()) ||
+	  ( ctr->excludeNames.find(s) == ctr->excludeNames.end())) {
 	files.push_back(*i);//[j++] = *i;
       }
     }

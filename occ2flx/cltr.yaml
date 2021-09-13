@@ -9,12 +9,12 @@
   package:         TKernel
   open:            [ Standard ]
   specific:
-    - flags:           [ value ]
+    - flags:           [ value, ctor, mfct ]
       names:           [ AsciiString, ExtendedString ]
 - target:          gp
   package:         TKMath
   open:            [ Standard ]
-  default:         [ value ]
+  default:         [ value, ctor, mfct ]
   exclude:         [ VectorWithNullMagnitude ]
 - target:          GeomAbs
   package:         TKG3d
@@ -23,20 +23,20 @@
   package:         TKG3d
   open:            [ Collection, gp ]
   include:         [ Standard ]
-  default:         [ handle, tvar ]
+  default:         [ handle, tvar, ctor, mfct ]
   exclude:         [ HSequenceOfBSplineSurface, SequenceOfBSplineSurface, 
                      UndefinedDerivative, UndefinedValue ]
 - target:          Geom2d
   package:         TKG2d
   open:            [ Collection, gp ]
   include:         [ Standard ]
-  default:         [ handle, tvar ]
+  default:         [ handle, tvar, ctor, mfct ]
   exclude:         [ UndefinedDerivative, UndefinedValue ]
 - target:          GC
   package:         TKGeomBase
   open:            [ GC_Maker, Geom, Standard, gp ]
   include:         [ GC_Maker, Geom ]
-  default:         [ maker ]
+  default:         [ maker, ctor ]
   exclude:         [ Root ]
 - target:          TopAbs
   package:         TKBRep
@@ -49,7 +49,7 @@
   open:            [ Collection, gp ]
   include:         [ Standard ]
   specific:
-    - flags:           [ value ]
+    - flags:           [ value, ctor, mfct ]
       names:           [ CompSolid, Compound, Edge, Face, Iterator, Shape, 
                          Shell, Solid, Vertex, Wire ]
 - target:          BRepBuilderAPI
@@ -57,33 +57,33 @@
   open:            [ BRepBuilderAPI_Maker, Geom, Standard, TopoDS, gp ]
   include:         [ BRepBuilderAPI_Maker, Geom ]
   specific:
-    - flags:           [ maker ]
+    - flags:           [ maker, ctor ]
       names:           [ EdgeError, FaceError, MakeEdge, MakeEdge2d, MakeFace, 
                          MakePolygon, MakeShape, MakeShell, MakeSolid, 
                          MakeVertex, MakeWire, PipeError, ShellError, WireError ]
 - target:          Aspect
   package:         TKService
   specific:
-    - flags:           [ handle ]
+    - flags:           [ handle, ctor, mfct ]
       names:           [ DisplayConnection, XAtom ]
 - target:          OpenGl
   package:         TKOpenGl
   specific:
-    - flags:           [ handle ]
+    - flags:           [ handle, ctor ]
       names:           [ GraphicDriver ]
 - target:          V3d
   package:         TKV3d
   specific:
-    - flags:           [ handle ]
+    - flags:           [ handle, ctor ]
       names:           [ AmbientLight, DirectionalLight, Viewer ]
 - target:          Quantity
   package:         TKernel
   specific:
-    - flags:           [ value ]
+    - flags:           [ value, ctor, mfct ]
       names:           [ Color ]
 - target:          Graphic3d
   package:         TKService
   specific:
-    - flags:           [ handle ]
+    - flags:           [ handle, ctor, mfct ]
       names:           [ GraphicDriver, Group, Structure, TypeOfShadingModel ]
 ...
