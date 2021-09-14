@@ -4,7 +4,7 @@
   open:            [ Standard, gp ]
   specific:
     - flags:           [ value, handle, tvar ]
-      names:           [ Array1, Array2, List, Sequence ]
+      names:           [ Array1, Array2, List, Sequence, DataMap ]
 - target:          TCollection
   package:         TKernel
   open:            [ Standard ]
@@ -38,6 +38,9 @@
   include:         [ GC_Maker, Geom ]
   default:         [ maker, ctor ]
   exclude:         [ Root ]
+- target:          Bnd
+  package:         TKMath
+  default:         [ value ]
 - target:          TopAbs
   package:         TKBRep
   default:         [ value ]
@@ -85,5 +88,5 @@
   package:         TKService
   specific:
     - flags:           [ handle, ctor, mfct ]
-      names:           [ GraphicDriver, Group, Structure, TypeOfShadingModel ]
+      names:           [ GraphicDriver, Structure, Group, TypeOfShadingModel ]
 ...

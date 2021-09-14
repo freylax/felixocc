@@ -50,7 +50,7 @@ static cl::opt<std::string> readYamlCTFile
 ( "ry",
   cl::value_desc("read yaml class translation"),
   cl::desc("read YAML File which contains the class translation"),
-  cl::Optional); //cl::Required);
+  cl::Required);
 
 static cl::opt<std::string> writeYamlCTFile
 ( "wy",
@@ -77,12 +77,15 @@ DeclarationMatcher ClassMatcher =
   cxxRecordDecl(isExpansionInMainFile(), hasDefinition()
 		).bind("classDecl");
 DeclarationMatcher EnumMatcher =
-  enumDecl(isExpansionInMainFile()//, hasDefinition()
+  enumDecl(isExpansionInMainFile(), isPublic() //, hasDefinition()
 	   ).bind("enumDecl");
 
 class FType {
 public:
-  FType(): builtin(false), pointer(false), handle( false), templateClass(false) {}
+  FType(): builtin(false), pointer(false), handle( false), templateClass(false),
+	   integral( false), integralValue( 0) {}
+  FType( int i) : builtin(false), pointer(false), handle( false), templateClass(false),
+		  integral( true), integralValue( i) {}
   string name;
   string inClass;
   bool   builtin;
@@ -90,6 +93,8 @@ public:
   bool   handle;
   bool   templateClass;
   string templateTypeSpec;
+  bool   integral;
+  int    integralValue;
   list<FType> typeArgs;
   string log;
 };
@@ -167,24 +172,7 @@ struct TrFlags {
     mfct     = 512;
 };
 
-enum TypeImplementation {
-  Value,
-  OccHandle,
-  TemplateClassVH,
-  Other
-};
-
 bool test( uint32_t f, uint32_t mask) { return (f & mask) == mask; }
-
-template <>
-struct ScalarEnumerationTraits<TypeImplementation> {
-  static void enumeration(IO &io, TypeImplementation &value) {
-    io.enumCase(value, "Value", Value);
-    io.enumCase(value, "OccHandle", OccHandle);
-    io.enumCase(value, "TemplateClassVH", TemplateClassVH);
-    io.enumCase(value, "Other", Other);
-  }
-};
 
 uint32_t flags( const string& cl, const string& cname);
 
@@ -288,7 +276,11 @@ bool trTemplate( const QualType& qt, FType& t) {
       t.log += "ta,";
       const auto n = st->getNumArgs();
       for( unsigned int i = 0; i<n; ++i) {
-	t.typeArgs.push_back( trType(st->getArg(i).getAsType()));
+	const auto k = st->getArg(i).getKind();
+	if( k == TemplateArgument::ArgKind::Type ) 
+	  t.typeArgs.push_back( trType( st->getArg(i).getAsType()));
+	else if( k == TemplateArgument::ArgKind::Integral )
+	  t.typeArgs.push_back( FType( static_cast<int>(st->getArg(i).getAsIntegral().getExtValue())));
       }
       t.templateClass = true;
       if( t.inClass == "Collection" ) {
@@ -466,9 +458,10 @@ public:
 
 string inClassType( const FType& ft, const ClassContext& ct, const bool& isRetType, TranslationUnit& tu) {
   string name;
+  if( ft.integral) return to_string( ft.integralValue);
   if( isRetType || ct.classHierarchyTypeVar.empty() || ft.name != ct.ftype) 
     name = ft.name;
-  else
+  else 
     name = ct.classHierarchyTypeVar;
   
   if( !(ft.builtin || ft.inClass.empty())) {
@@ -653,6 +646,7 @@ bool trCtor( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu
 }
 
 bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUnit& tu) {
+
   if ( !isa<CXXConstructorDecl>(m) && !isa<CXXDestructorDecl>(m) &&
        ! m->isOverloadedOperator() &&
        ! (m->isVirtual() && !m->isPure())
@@ -662,21 +656,25 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
     if( name == "get_type_descriptor" ||
 	name == "get_type_name") return true;
     const QualType rt = m->getReturnType();
+    const CXXConversionDecl* cd = dynamic_cast<const CXXConversionDecl*>(m);
     string frt;
     if ( !rt->isVoidType() )
       frt = inClassType( trType( rt, tu.trTypeLog), ct, true, tu);
     d << indent(tu.currentIndent);
-    if ( frt.empty() ) d << "proc ";
+    if ( cd != 0) d << "ctor "; // conversion operator
+    else if ( frt.empty() ) d << "proc ";
     //else if (frt == name) d << "ctor ";
     else d << "fun ";
     std::list<string> args_ = args( m, ct, tu);
     //if( tu.dpTypes.find( name) != tu.dpTypes.end()) {
     // we rename the member name
-    string fname = name;
-    fname[0] = tolower(fname[0]);
-      //}
-    d << fname << ": ";
-
+    if( cd == 0) {
+      string fname = name;
+      fname[0] = tolower(fname[0]);
+      d << fname;
+    } else
+      d << frt; 
+    d << ": ";
     // if not a static method then first arg is of type ftype
     if( !m->isStatic()) {
       if( ct.classHierarchyTypeVar.empty())
@@ -685,7 +683,7 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 	args_.push_front( ct.classHierarchyTypeVar);
     }
     printArgs( args_, d);
-    if ( !rt->isVoidType()/* && frt != name*/ ) // print return type
+    if ( cd == 0 && !rt->isVoidType()/* && frt != name*/ ) // print return type
       d << " -> " << frt;
     d << " = \""; 
     if( m->isStatic()) {
@@ -720,17 +718,23 @@ string camelToSpaces( string s) {
 
 
 bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
+  //if( ed->hasProtectedVisibility()) return true;
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
   auto ind = tu.currentIndent;
-  d << indent(ind) << "type " << ct.ftype << " = \"" << ct.ctype << "\" "
-    << "requires " << tu.headerName << ";" << endl;
+  if( !ct.ftype.empty()) {
+    d << indent(ind) << "type " << ct.ftype << " = \"" << ct.ctype << "\" "
+      << "requires " << tu.headerName << ";" << endl;
+  }
   for( auto i = ed->enumerator_begin(); i != ed->enumerator_end(); ++i) {
     string cs = i->getNameAsString(); string fs = cs;
     string::size_type p = fs.find_first_of( '_');
     if( p != string::npos ) fs = fs.substr(p+1,string::npos);
-    d << indent(ind) << "const " << fs << ": " << ct.ftype << " = \"" << cs << "\";" << endl;
+    d << indent(ind) << "const " << fs << ": ";
+    if( ct.ftype.empty()) d << "int"; else d << ct.ftype;
+    d << " = \"" << cs << "\";" << endl;
   }
+  if( ct.ftype.empty()) return true; // enum without name
   d << indent( ind) << "fun == : " << ct.ftype << " * " << ct.ftype << " -> bool = \"$1==$2\";" << endl;
   d << indent( ind)
     << "instance Str[" << ct.ftype << "] {" << endl;
@@ -925,12 +929,6 @@ struct ClassTranslation {
   string package;
   set<string> openClasses;
   set<string> includes;
-  //TypeImplementation typeImpl;
-  //string classHierarchyTypeVar;
-  //function<bool( const CXXRecordDecl*,const ClassContext&, TranslationUnit&)> typeTr;
-  //list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
-  //set<string> includeFiles;
-  //set<string> excludeFiles;
   uint32_t    defaultFlags;
   map<string,uint32_t> specificFlags;
   set<string>          excludeNames;
@@ -957,16 +955,6 @@ void ctToYaml( const ClassTranslation& ct, YClassTranslation& y)
   y.package = ct.package;
   copy( ct.openClasses, y.openClasses);
   copy( ct.includes, y.includes);
-  // uint32_t f = 0;
-  // if( ! ct.classHierarchyTypeVar.empty() )
-  //   f |= TrFlags::tvar;
-  // switch( ct.typeImpl) {
-  // case Value:           f |= TrFlags::value; break;
-  // case OccHandle:       f |= TrFlags::handle; break; 
-  // case TemplateClassVH: f |= TrFlags::value | TrFlags::handle | TrFlags::tvar; break;
-  // case Other:           f |= TrFlags::maker; break;
-  // }
-  // y.defaultFlags = f;
   y.defaultFlags = ct.defaultFlags;
   y.specificFlags.clear();
   for( auto i = ct.specificFlags.begin(); i != ct.specificFlags.end(); ++i ) {
@@ -1075,9 +1063,6 @@ public :
     const EnumDecl *ed = Result.Nodes.getNodeAs<clang::EnumDecl>("enumDecl");
     if ( rd && rd->isCompleteDefinition() ) {
       tu->setDeclContext( rd->getDeclContext());
-      //if( first )
-      //	rd->dumpLookups();
-      //first = false;
       ClassContext ct = classContext( rd->getDeclName().getAsString());
       //std::cout << "run" << std::endl;
       bool c = false; bool mk = false; bool vh = false;
@@ -1288,7 +1273,7 @@ int main(int argc, const char **argv) {
       // MemoryBuffer does not need to be closed
       return EXIT_FAILURE;
     } else {
-      llvm::outs() << "opening yaml class translation file " << readYamlCTFile << '\n';
+      //llvm::outs() << "opening yaml class translation file " << readYamlCTFile << '\n';
     }
     const char* inp = R"(
 ---
@@ -1321,7 +1306,7 @@ int main(int argc, const char **argv) {
       llvm::errs() << errc.message() << '\n';
       return EXIT_FAILURE;
     } else {
-      llvm::outs() << "parsing YAML input from file " << readYamlCTFile << '\n';
+      //llvm::outs() << "parsing YAML input from file " << readYamlCTFile << '\n';
       yamlToCt( y/*[0]*/, classTranslations);
     }
   }
@@ -1336,19 +1321,19 @@ int main(int argc, const char **argv) {
       writer.close();
       return EXIT_FAILURE;
     } else {
-      llvm::outs() << "opening yaml output file " << writeYamlCTFile << '\n';
+      //llvm::outs() << "opening yaml output file " << writeYamlCTFile << '\n';
     }
     /* Create the YAML Output */
     llvm::yaml::Output yout(writer);
 
     vector<YClassTranslation> y;
-    cout << "start class trans copy" << endl;
+    //cout << "start class trans copy" << endl;
     ctToYaml( classTranslations, y);
-    cout << "end class trans" << endl;
+    //cout << "end class trans" << endl;
     
     /* Writing output into file */
     yout << y;
-    llvm::outs() << "writing YAML output into file " << writeYamlCTFile << '\n';
+    //llvm::outs() << "writing YAML output into file " << writeYamlCTFile << '\n';
 
     writer.close();
   }
@@ -1415,7 +1400,8 @@ int main(int argc, const char **argv) {
       string::size_type p = i->find_last_of( '_');
       string::size_type q = i->find_last_of( '.');
       string s = ( p != string::npos && q != string::npos ) ? i->substr( p+1, q-p-1) : ".";
-      if( ( ctr->defaultFlags==0 && ctr->specificFlags.find(s) != ctr->specificFlags.end()) ||
+      if( ( ( ctr->defaultFlags==0 && ctr->specificFlags.find(s) != ctr->specificFlags.end() )
+	    || ctr->defaultFlags!=0 ) &&
 	  ( ctr->excludeNames.find(s) == ctr->excludeNames.end())) {
 	files.push_back(*i);//[j++] = *i;
       }
