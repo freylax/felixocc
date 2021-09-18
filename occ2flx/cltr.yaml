@@ -4,7 +4,7 @@
   open:            [ Standard, gp ]
   specific:
     - flags:           [ value, handle, tvar ]
-      names:           [ Array1, Array2, List, Sequence, DataMap ]
+      names:           [ Array1, Array2, DataMap, List, Sequence ]
 - target:          TCollection
   package:         TKernel
   open:            [ Standard ]
@@ -41,12 +41,18 @@
 - target:          Bnd
   package:         TKMath
   default:         [ value ]
+  specific:
+    - flags:           [ handle ]
+      names:           [ HArray1OfBox, HArray1OfBox2d, HArray1OfSphere ]
 - target:          TopAbs
   package:         TKBRep
   default:         [ value ]
 - target:          TopLoc
   package:         TKBRep
   default:         [ value ]
+  specific:
+    - flags:           [ handle ]
+      names:           [ Datum3D, SListNodeOfItemLocation ]
 - target:          TopoDS
   package:         TKBRep
   open:            [ Collection, gp ]
@@ -64,11 +70,6 @@
       names:           [ EdgeError, FaceError, MakeEdge, MakeEdge2d, MakeFace, 
                          MakePolygon, MakeShape, MakeShell, MakeSolid, 
                          MakeVertex, MakeWire, PipeError, ShellError, WireError ]
-- target:          Aspect
-  package:         TKService
-  specific:
-    - flags:           [ handle, ctor, mfct ]
-      names:           [ DisplayConnection, XAtom ]
 - target:          OpenGl
   package:         TKOpenGl
   specific:
@@ -84,9 +85,21 @@
   specific:
     - flags:           [ value, ctor, mfct ]
       names:           [ Color ]
+- target:          Aspect
+  package:         TKService
+  default:         [ value, ctor, mfct ]
+  specific:
+    - flags:           [ handle, ctor, mfct ]
+      names:           [ CircularGrid, DisplayConnection, Grid, NeutralWindow, 
+                         OpenVRSession, RectangularGrid, VKeySet, Window, 
+                         XRAction, XRActionSet, XRSession ]
+  exclude:         [ AspectFillAreaDefinitionError, AspectLineDefinitionError, 
+                     AspectMarkerDefinitionError, DisplayConnectionDefinitionError, 
+                     GraphicDeviceDefinitionError, IdentDefinitionError, 
+                     WindowDefinitionError, WindowError ]
 - target:          Graphic3d
   package:         TKService
   specific:
     - flags:           [ handle, ctor, mfct ]
-      names:           [ GraphicDriver, Structure, Group, TypeOfShadingModel ]
+      names:           [ Aspects, GraphicDriver, Group, Structure, TypeOfShadingModel ]
 ...
