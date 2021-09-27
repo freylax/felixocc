@@ -40,9 +40,9 @@
   exclude:         [ Root ]
 - target:          Bnd
   package:         TKMath
-  default:         [ value ]
+  default:         [ value, ctor, mfct ]
   specific:
-    - flags:           [ handle ]
+    - flags:           [ value, handle, tvar ]
       names:           [ HArray1OfBox, HArray1OfBox2d, HArray1OfSphere ]
 - target:          TopAbs
   package:         TKBRep

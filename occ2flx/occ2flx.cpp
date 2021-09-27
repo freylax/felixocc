@@ -174,7 +174,7 @@ struct TrFlags {
 
 bool test( uint32_t f, uint32_t mask) { return (f & mask) == mask; }
 
-uint32_t flags( const string& cl, const string& cname);
+uint32_t& flags( const string& cl, const string& cname);
 
 bool trTemplate( const QualType& qt, FType& t);
 
@@ -255,6 +255,31 @@ bool trTemplate( const QualType& qt, FType& t) {
 	t.inClass = p.inClass;
 	t.handle = true;
 	t.log += p.log;
+      } else if( test( f, TrFlags::handle | TrFlags::value | TrFlags::tvar) ) {
+	//transient
+	CXXRecordDecl* rd = ct->getAsCXXRecordDecl();
+	if( rd) {
+	  auto b = rd->bases_begin();
+	  if( b!=rd->bases_end()) {
+	    FType ft = trType( b->getType());
+	    if( ft.inClass == "Collection" && ft.templateClass) {
+	      b++;
+	      if ( b != rd->bases_end()) {
+		const CXXRecordDecl* rd_ = b->getType()->getAsCXXRecordDecl();
+		if( rd_ && ( rd_->getNameAsString() == "Standard_Transient")) {
+		  FType fta = ft.typeArgs.front();
+		  t.log += "vht,";
+		  t.name = ft.name;
+		  t.inClass = ft.inClass;
+		  t.templateClass = ft.templateClass;
+		  t.templateTypeSpec = "H";
+		  t.typeArgs = ft.typeArgs;
+		  t.log += ft.log;
+		}
+	      }
+	    }
+	  }
+	}
       } else if( p.inClass == "Collection") {
 	t.log += "col,";
 	t.name = p.name;
@@ -394,6 +419,7 @@ public:
   stringstream  headerDefs;
   stringstream* def;
   stringstream* eofTypeDef;
+  stringstream  afterClassDef;
   void setDeclContext( const DeclContext* dc) {
     auto t = defs.top();
     if( t->decl == 0) {
@@ -442,14 +468,14 @@ class ClassContext {
 public:
   const string& inClass;
   const set<string>& openClasses;
-  uint32_t flags;
+  uint32_t& flags;
   string ftype;
   string ctype;
   bool handle;
   string classHierarchyTypeVar; 
   ClassContext( const string& inClass_,
 		const set<string>& openClasses_,
-		const uint32_t& flags_) :
+		uint32_t& flags_) :
     inClass( inClass_), openClasses( openClasses_),
     flags( flags_),
     handle( (flags & TrFlags::handle ) == TrFlags::handle),
@@ -525,13 +551,13 @@ bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& 
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
   //  if( ! rd->isAbstract()) {
-    d << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
-    if( ct.handle)
-      d << "opencascade::handle<" << ct.ctype << ">";
-    else
-      d << ct.ctype;
-    d << "\" requires " << tu.headerName << ";" << endl;
-    //}
+  d << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
+  if( ct.handle)
+    d << "opencascade::handle<" << ct.ctype << ">";
+  else
+    d << ct.ctype;
+  d << "\" requires " << tu.headerName << ";" << endl;
+  //}
   if( !ct.classHierarchyTypeVar.empty()) {
     // we create a felix class
     d << indent(tu.currentIndent) << "class " << ct.ftype
@@ -569,6 +595,33 @@ bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& 
 static std::map<std::string,std::list<std::string>> tcolHFiles;  // mapping Container->files 
 
 bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
+  auto b = rd->bases_begin();
+  if( b!=rd->bases_end()) {
+    FType ft = trType( b->getType());
+    if( ft.inClass == "Collection" && ft.templateClass) {
+      b++;
+      if ( b != rd->bases_end()) {
+	const CXXRecordDecl* rd_ = b->getType()->getAsCXXRecordDecl();
+	if( rd_ && ( rd_->getNameAsString() == "Standard_Transient")) {
+	  FType fta = ft.typeArgs.front();
+	  tu.dpClasses.insert( ft.inClass);
+	  // cout << "HCollection for " << ft.name << endl;
+	  string coltype = ct.ftype;
+	  tu.afterClassDef
+	    << "instance " << ft.inClass << "::" << ft.name
+	    << "[" << fta.inClass << "::" << fta.name << "] {" << endl
+	    << indent(1) 
+	    << "type " << coltype << " = \"" << coltype << "\" requires " << tu.headerName << ";"
+	    << endl << indent(1)
+	    << "instance type H = handle[" << coltype << "];" << endl
+	    << indent(1)
+	    << "fun createH[A] (a:A) => createHandle[" << coltype << ",A](a);" << endl
+	    << "}" << endl;	  
+	  return true;
+	}
+      }
+    }
+  }  
   if( tu.currentIndent > 1) return true;
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
@@ -924,6 +977,8 @@ typedef vector< YClassTranslation> YClassTranslations;
 
 LLVM_YAML_IS_SEQUENCE_VECTOR( YClassTranslations);
 
+static uint32_t zero = 0;
+
 struct ClassTranslation {
   string targetClass;
   string package;
@@ -932,14 +987,14 @@ struct ClassTranslation {
   uint32_t    defaultFlags;
   map<string,uint32_t> specificFlags;
   set<string>          excludeNames;
-  uint32_t flags ( const string& cname) const {
+  uint32_t& flags ( const string& cname) {
     const string::size_type p = cname.find_first_of( '_');
     const string n = ( p != string::npos ) ? cname.substr( p+1, string::npos) : ".";
     auto i = specificFlags.find( n);
     if( i != specificFlags.end()) return i->second;
     else {
       auto j = excludeNames.find( n);
-      if( j != excludeNames.end()) return 0;
+      if( j != excludeNames.end()) return zero;
       else return defaultFlags;	
     }
   }
@@ -958,6 +1013,8 @@ void ctToYaml( const ClassTranslation& ct, YClassTranslation& y)
   y.defaultFlags = ct.defaultFlags;
   y.specificFlags.clear();
   for( auto i = ct.specificFlags.begin(); i != ct.specificFlags.end(); ++i ) {
+    if( ct.defaultFlags != 0 && i->second == ct.defaultFlags )
+      continue; // drop the name if flags are equal to defaults
     auto j = y.specificFlags.begin();
     while ( j != y.specificFlags.end()) {
       if( j->flags == i->second ) {
@@ -1013,12 +1070,38 @@ void yamlToCt( const vector<YClassTranslation>& y, list<ClassTranslation>& ct)
   }
 }
 
+bool isTransient( const QualType& qt, int level  = 0, const string& msg = "")
+{
+  bool ret = false;
+  if( qt->isTypedefNameType())
+    ret = isTransient( qt->getAs<TypedefType>()->desugar(), level+1, "typedef");
+  else if( qt->getAs<ElaboratedType>()) {
+    auto st = qt->getAs<TemplateSpecializationType>();
+    if( st) ret = isTransient( st->desugar(), level+1, "template");
+  } else if ( const auto rd = qt->getAsCXXRecordDecl()) {
+    if( rd->getNameAsString() == "Standard_Transient") ret = true;
+    else {
+      for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
+	if( isTransient( b->getType(), level+1, "record")) { ret = true; break; }
+      }
+    }
+  }
+  //cout << "isTransient(" << qt.getAsString() << "," << level << "," << msg << "):" << ret << endl;
+  return ret;
+}
+
+struct Warnings {
+  list<string> recommendHandleForValue;
+  list<string> recommendValueForHandle;
+};
+
+static map<string,Warnings> warnings; 
 
 class ClassWriter : public MatchFinder::MatchCallback {
 private:
   list<shared_ptr<TranslationUnit>> tus;
   shared_ptr<TranslationUnit> tu;
-  ClassTranslation ctr;
+  ClassTranslation& ctr;
   bool first = true;
   set<string> includes;
   
@@ -1040,7 +1123,7 @@ private:
     return ct;
   }
 public :
-  ClassWriter ( const ClassTranslation& ctr_) :ctr( ctr_), includes(ctr.includes) { }
+  ClassWriter ( ClassTranslation& ctr_) :ctr( ctr_), includes(ctr.includes) { }
   virtual void onStartOfTranslationUnit() {
     //std::cout << "startOfTU" << std::endl;
     tu = shared_ptr<TranslationUnit>( new TranslationUnit());
@@ -1064,7 +1147,20 @@ public :
     if ( rd && rd->isCompleteDefinition() ) {
       tu->setDeclContext( rd->getDeclContext());
       ClassContext ct = classContext( rd->getDeclName().getAsString());
-      //std::cout << "run" << std::endl;
+      // check if class has base class Standard_Transient
+      bool transient = false;
+      for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
+	if( isTransient( b->getType())) { transient = true; break; }
+      }
+      bool hf = test( ct.flags, TrFlags::handle);
+      // cout << "(tr=" << transient << ",hf=" << hf << ") ";
+      if( !test( ct.flags, TrFlags::value | TrFlags::handle | TrFlags::tvar) ) {
+	if( transient && !hf) {
+	  warnings[ct.inClass].recommendHandleForValue.push_back( ct.ftype);
+	} else if( !transient && hf) {
+	  warnings[ct.inClass].recommendValueForHandle.push_back( ct.ftype);
+	}
+      }
       bool c = false; bool mk = false; bool vh = false;
       list<function<bool( const CXXMethodDecl*, const ClassContext&, TranslationUnit&)> > mfTr;
       if( test( ct.flags, TrFlags::value | TrFlags::handle | TrFlags::tvar) ) {
@@ -1189,16 +1285,23 @@ public :
     }
     
     for( auto i = tus.begin(); i != tus.end(); ++i) {
-      os << "// --- " << (*i)->fileName << " ---" << endl;
-      os << (*i)->def->str();
+      string s =  (*i)->def->str();
+      if( !s.empty()) {
+	os << "// --- " << (*i)->fileName << " ---" << endl;
+	os << s;
+      }
     }
     os << "};" << endl;
+    for( auto i = tus.begin(); i != tus.end(); ++i) {
+      string s =  (*i)->afterClassDef.str();
+      if( !s.empty()) {
+	os << "// --- " << (*i)->fileName << " ---" << endl;
+	os << s;
+      }
+    }
     os.close();
   }
 };
-
-
-
 
 static list<ClassTranslation> classTranslations;
 // =
@@ -1239,14 +1342,30 @@ static list<ClassTranslation> classTranslations;
     
 //   };
 
-uint32_t flags( const string& cl, const string& cname) {
+
+uint32_t& flags( const string& cl, const string& cname) {
   for( auto ctr = classTranslations.begin(); ctr != classTranslations.end(); ++ctr) {
     if( cl != ctr->targetClass) continue;
     return ctr->flags( cname);
   }
-  return 0;
+  return zero;
 }
 
+void changeFlags( const list<string>& l,
+		  map<string,uint32_t>& sf,
+		  uint32_t def,
+		  uint32_t from, uint32_t to)
+{
+  for( auto i = l.begin(); i != l.end(); ++i) {
+    if( i != l.begin()) cout << ", ";
+    cout << *i;
+    bool init = ( sf.find( *i) == sf.end()); 
+    uint32_t& f = sf[*i];
+    if( init) f = def;
+    f &= ~from;
+    f |= to;
+  }
+}
 
 int main(int argc, const char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv);
@@ -1312,31 +1431,6 @@ int main(int argc, const char **argv) {
   }
 
   //////////////////////////////////
-  if( ! writeYamlCTFile.empty()) {
-    error_code errc;
-    raw_fd_ostream writer( writeYamlCTFile, errc);
-    if (errc) {
-      llvm::errs() << "error writing yaml output file " << writeYamlCTFile << '\n';
-      llvm::errs() << errc.message() << '\n';
-      writer.close();
-      return EXIT_FAILURE;
-    } else {
-      //llvm::outs() << "opening yaml output file " << writeYamlCTFile << '\n';
-    }
-    /* Create the YAML Output */
-    llvm::yaml::Output yout(writer);
-
-    vector<YClassTranslation> y;
-    //cout << "start class trans copy" << endl;
-    ctToYaml( classTranslations, y);
-    //cout << "end class trans" << endl;
-    
-    /* Writing output into file */
-    yout << y;
-    //llvm::outs() << "writing YAML output into file " << writeYamlCTFile << '\n';
-
-    writer.close();
-  }
   
   std::map<std::string,std::list<std::string>> groupedFiles;
   //  std::map<std::string,std::list<std::string>> tcolHFiles;  // mapping Container->files 
@@ -1415,4 +1509,52 @@ int main(int argc, const char **argv) {
     if( result != 0) cout << "Error during Tool run" << endl;
     Writer.writeFile();
   }
+
+  // process warnings
+  if( !warnings.empty()) {
+    cout << "Flag recommendations:" << endl;
+    for( auto i = classTranslations.begin(); i != classTranslations.end(); ++i) {
+      auto j = warnings.find( i->targetClass);
+      if( j != warnings.end()) {
+	cout << j->first << endl;
+	auto lh = j->second.recommendHandleForValue;
+	auto lv = j->second.recommendValueForHandle;
+	if( ! lh.empty()) {
+	  cout << "->handle: ";
+	  changeFlags( lh, i->specificFlags, i->defaultFlags, TrFlags::value, TrFlags::handle );
+	  cout << endl;
+	}
+	if( ! lv.empty()) {
+	  cout << "->value : ";
+	  changeFlags( lv, i->specificFlags, i->defaultFlags, TrFlags::handle, TrFlags::value );
+	  cout << endl;
+	}
+      }
+    }
+  }
+  
+  if( !writeYamlCTFile.empty()) {
+    error_code errc;
+    raw_fd_ostream writer( writeYamlCTFile, errc);
+    if (errc) {
+      llvm::errs() << "error writing yaml output file " << writeYamlCTFile << '\n';
+      llvm::errs() << errc.message() << '\n';
+      writer.close();
+      return EXIT_FAILURE;
+    } else {
+      //llvm::outs() << "opening yaml output file " << writeYamlCTFile << '\n';
+    }
+    /* Create the YAML Output */
+    llvm::yaml::Output yout(writer);
+
+    vector<YClassTranslation> y;
+    //cout << "start class trans copy" << endl;
+    ctToYaml( classTranslations, y);
+    //cout << "end class trans" << endl;
+    
+    /* Writing output into file */
+    yout << y;
+    llvm::outs() << "writing YAML output into file " << writeYamlCTFile << '\n';   
+    writer.close();
+  } 
 }
