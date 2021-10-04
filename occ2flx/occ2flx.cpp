@@ -99,6 +99,17 @@ public:
   string log;
 };
 
+template<class T> string dumpToStr(const T& t) {
+  string s;
+  raw_string_ostream ss( s);
+  //PrintingPolicy pp = LangOptions();
+  //pp.FullyQualifiedName = 1;
+  // pp.PrintCanonicalTypes = 1;
+  t.dump(ss);
+  ss.flush();
+  return s;
+}
+
 
 bool translateStandardTypes( const string& name, FType& t) {
   bool ret = true;
@@ -108,7 +119,7 @@ bool translateStandardTypes( const string& name, FType& t) {
     { t.name = "float"; t.builtin = true; t.inClass.clear(); }
   else if( name == "Integer" )
     { t.name = "int"; t.builtin = true; t.inClass.clear(); }
-  else if( name == "Boolean" )
+  else if( name == "Boolean" || name == "bool" )
     { t.name = "bool"; t.builtin = true; t.inClass.clear(); }
   else if( name == "Character" )
     { t.name = "char"; t.builtin = true; t.inClass.clear(); }
@@ -124,10 +135,35 @@ bool translateStandardTypes( const string& name, FType& t) {
     { t.name = "cstring"; t.builtin = true; t.inClass.clear(); }
   else if( name == "ExtendedString" )
     { t.name = "+uint16"; t.builtin = true; t.inClass.clear(); }
+  
   else ret = false;
   return ret;
 }
 
+bool translateTypedefs( const string& name, FType& t) {
+  bool ret = true;
+  if( name == "unsigned long" ) t.name = "uint64";
+  else if( name == "unsigned int" )  t.name = "uint32"; 
+  else ret = false;
+  if( ret) {
+    // cout << "translateTypedefs( " << name << "," << t.name << ")" << endl;
+    t.builtin = true; t.inClass.clear();
+  }
+  return ret;
+}
+
+bool translateBuiltinTypes( const string& name, FType& t) {
+  bool ret = true;
+  if( name == "_Bool" ) t.name = "bool";
+  else if( name == "__uint64_t" ) t.name = "uint64";
+  else if( name == "__uint16_t" ) t.name = "uint16";  
+  else ret = false;
+  if( ret) {
+    // cout << "translateBuiltinTypes( " << name << "," << t.name << ")" << endl;
+    t.builtin = true; t.inClass.clear();
+  }
+  return ret;
+}
 
 string cToFclass( const string& n) {
   if( n == "NCollection" ) return "Collection";
@@ -149,16 +185,6 @@ void setClassAndName( const string& n, FType& t) {
   }
 }
 
-template<class T> string dumpToStr(const T& t) {
-  string s;
-  raw_string_ostream ss( s);
-  //PrintingPolicy pp = LangOptions();
-  //pp.FullyQualifiedName = 1;
-  // pp.PrintCanonicalTypes = 1;
-  t.dump(ss);
-  ss.flush();
-  return s;
-}
 
 struct TrFlags {
   static const uint32_t
@@ -183,17 +209,24 @@ bool trTColName( const string& name, FType& t, string& coltype);
 FType trType( const QualType& qt_) {
   QualType qt = qt_;
   FType t; t.builtin=false; t.pointer=false;
-  if( qt->isReferenceType() || qt->isPointerType()) {
-    qt = qt->getPointeeType();
-    t.log += "p,";
+  //t.log += "[" + qt.getAsString() + "],";
+  // any qualifiers
+  if( auto rt = qt->getAs<ReferenceType>()) {
     if( !qt.isLocalConstQualified() ) t.pointer = true; 
-  }
-  if( qt.isLocalConstQualified()) qt.removeLocalConst();
-  
+    qt = rt->getPointeeTypeAsWritten();
+    t.log += "rt["+ qt.getAsString() + "],";
+  } else if( auto pt = qt->getAsAdjusted<clang::PointerType>()) {
+    if( !qt.isLocalConstQualified() ) t.pointer = true; 
+    qt = pt->getPointeeType();
+    t.log += "pt["+ qt.getAsString() + "],";
+  } 
+  if( qt.isLocalConstQualified() )
+    qt.removeLocalConst();
   if( qt->isTypedefNameType()){
     t.log += "td,";
     setClassAndName( qt.getAsString(), t);
-    FType u = trType( qt->getAs<TypedefType>()->desugar());
+    QualType qt_ = qt->getAs<TypedefType>()->desugar();
+    FType u = trType( qt_);
     if( u.inClass == "Collection" && u.templateClass) { // t.inClass.compare( 0,4,"TCol" ) == 0) {
       // this will expand to NCollection ...
       t.log += t.inClass + ",";
@@ -203,13 +236,27 @@ FType trType( const QualType& qt_) {
       t.pointer = p; t.log = l + t.log;
     } else if( t.inClass == "Standard") {
       translateStandardTypes( t.name, t);
+    } else {
+      t.log += "trtd,";
+      string n = qt_.getAsString();
+      if( !translateTypedefs( n, t))
+	translateBuiltinTypes( n, t);
     }
   } else if( qt->isBuiltinType() ) {
     t.log += "bi,";
-    t.name = qt.getAsString(); t.builtin = true;
-  } else if( auto et = qt->getAs<ElaboratedType>()) {
+    if( !translateBuiltinTypes( qt.getAsString(),t)) {
+      t.name = qt.getAsString();     t.builtin = true;
+    }
+  } else if(auto et = qt->getAs<ElaboratedType>()) {
     t.log += "el,";
     if( !trTemplate( qt, t)) {
+      //QualType qt_ =  et->getNamedType();
+      //cout << qt_.getAsString()<<endl;
+      //if(et->getQualifier()) {
+      //cout << dumpToStr(*(et->getQualifier())) <<endl;
+      //}
+      //qt_->dump();
+      t.log += "ntempl,";
       t.name = qt.getAsString();
     }
   } else if( qt->isRecordType()) {

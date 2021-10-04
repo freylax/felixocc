@@ -38,6 +38,15 @@
   include:         [ GC_Maker, Geom ]
   default:         [ maker, ctor ]
   exclude:         [ Root ]
+- target:          BVH
+  package:         TKMath
+  default:         [ value, ctor, mfct ]
+  specific:
+    - flags:           [ handle, ctor, mfct ]
+      names:           [ BuilderTransient, Builder, TreeBaseTransient, TreeBase,
+                         ObjectTransient, BuildThread, Properties, Transform ]
+  exclude:         [ BinaryTree, SweepPlaneBuilder, QuickSorter, LinearBuilder, Object, Ray, BuildQueue,
+                     IndexedBoxSet ]                       
 - target:          Bnd
   package:         TKMath
   default:         [ value, ctor, mfct ]
@@ -91,12 +100,13 @@
   specific:
     - flags:           [ handle, ctor, mfct ]
       names:           [ CircularGrid, DisplayConnection, Grid, NeutralWindow, 
-                         OpenVRSession, RectangularGrid, VKeySet, Window, 
+                         RectangularGrid, VKeySet, Window, 
                          XRAction, XRActionSet, XRSession ]
   exclude:         [ AspectFillAreaDefinitionError, AspectLineDefinitionError, 
                      AspectMarkerDefinitionError, DisplayConnectionDefinitionError, 
                      GraphicDeviceDefinitionError, IdentDefinitionError, 
-                     WindowDefinitionError, WindowError ]
+                     WindowDefinitionError, WindowError, XRSession, OpenVRSession,
+                     FrustumLRBT ]
 - target:          Graphic3d
   package:         TKService
   specific:
