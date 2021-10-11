@@ -76,8 +76,11 @@ static llvm::SmallString<256> realOccDir;
 DeclarationMatcher ClassMatcher =
   cxxRecordDecl(isExpansionInMainFile(), hasDefinition()
 		).bind("classDecl");
+DeclarationMatcher TemplateMatcher =
+  classTemplateDecl(isExpansionInMainFile()//, hasDefinition()
+		    ).bind("templateDecl");
 DeclarationMatcher EnumMatcher =
-  enumDecl(isExpansionInMainFile(), isPublic() //, hasDefinition()
+  enumDecl(isExpansionInMainFile()//, isPublic() //, hasDefinition()
 	   ).bind("enumDecl");
 
 class FType {
@@ -111,8 +114,9 @@ template<class T> string dumpToStr(const T& t) {
 }
 
 
-bool translateStandardTypes( const string& name, FType& t) {
+bool translateStandardTypes( FType& t) {
   bool ret = true;
+  string name = t.name;
   if( name == "Real" )
     { t.name = "double"; t.builtin = true; t.inClass.clear(); }
   else if( name == "ShortReal" )
@@ -133,9 +137,22 @@ bool translateStandardTypes( const string& name, FType& t) {
     { t.name = "uint16"; t.builtin = true; t.inClass.clear(); }
   else if( name == "CString" )
     { t.name = "cstring"; t.builtin = true; t.inClass.clear(); }
-  else if( name == "ExtendedString" )
+  else if( name == "ExtString" )
     { t.name = "+uint16"; t.builtin = true; t.inClass.clear(); }
-  
+  else if( name == "WideChar" )
+    {
+      if( t.pointer) { t.name = "+int32"; t.pointer=false; }  // has to be uint16 on Windows
+      else t.name = "int32";
+      t.builtin = true; t.inClass.clear();
+    }
+  else if( name == "Utf16Char" )
+    {
+      if( t.pointer) { t.name = "+uint16"; t.pointer=false; }  
+      else t.name = "uint16";
+      t.builtin = true; t.inClass.clear();
+    }
+  else if( name == "PCharacter" )
+    { t.name = "+char"; t.builtin = true; t.inClass.clear(); }
   else ret = false;
   return ret;
 }
@@ -235,7 +252,7 @@ FType trType( const QualType& qt_) {
       t = u;
       t.pointer = p; t.log = l + t.log;
     } else if( t.inClass == "Standard") {
-      translateStandardTypes( t.name, t);
+      translateStandardTypes( t);
     } else {
       t.log += "trtd,";
       string n = qt_.getAsString();
@@ -394,13 +411,13 @@ bool trTColName( const string& name, FType& t, string& coltype)
 	a.name = n.substr( 0,p); // no H types
 	FType b;
 	b.name = n.substr( p+2,string::npos);
-	translateStandardTypes( b.name, b); // we assume a standard type
+	translateStandardTypes( b); // we assume a standard type
 	a.typeArgs.push_back( b);
       } else {
 	// normal argument
 	a.name = n;
 	if( a.inClass == "Standard")
-	  translateStandardTypes( a.name, a);	
+	  translateStandardTypes( a);	
       }
       t.typeArgs.push_back( a);	
     }
@@ -509,7 +526,12 @@ bool containsAtLeastOneOf(const set<string>& u,const set<string>& v) {
   while( i != u.end() && v.find( *i) == v.end()) ++i;
   return i != u.end();
 }
-  
+
+
+//struct TypeVar {
+//  list< TypeVar> a;
+//  strig name;
+//}
 
 class ClassContext {
 public:
@@ -518,6 +540,7 @@ public:
   uint32_t& flags;
   string ftype;
   string ctype;
+  list< string> typeVars;
   bool handle;
   string classHierarchyTypeVar; 
   ClassContext( const string& inClass_,
@@ -547,7 +570,12 @@ string inClassType( const FType& ft, const ClassContext& ct, const bool& isRetTy
 	name = ft.inClass + "::" + name;
     }
   }
-  if( ft.pointer) name = "&" + name;
+  if( ft.pointer) {
+    if( name.size() > 0 && name[0] == '+' )
+      name = "&(" + name + ")";
+    else
+      name = "&" + name;
+  }
   if( !ft.typeArgs.empty()) {
     name += "[";
     for( auto i=ft.typeArgs.begin(); i != ft.typeArgs.end(); ++i) {
@@ -597,12 +625,25 @@ list<pair<string,string>> namedArgs
 bool setType( const CXXRecordDecl* rd, const ClassContext& ct, TranslationUnit& tu) {
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
-  //  if( ! rd->isAbstract()) {
-  d << indent(tu.currentIndent) << "type " << ct.ftype << " = \"";
+  d << indent(tu.currentIndent) << "type " << ct.ftype;
+  if( !ct.typeVars.empty()) {
+    d << "[";
+    for( auto i = ct.typeVars.begin(); i != ct.typeVars.end(); ++i) {
+      if( i != ct.typeVars.begin()) d << ",";
+      d << *i;
+    };
+    d << "]";
+  }
+  d << " = \"";
   if( ct.handle)
-    d << "opencascade::handle<" << ct.ctype << ">";
+    d << "opencascade::handle<" << ct.ctype;
   else
     d << ct.ctype;
+  if( !ct.typeVars.empty()) {
+    d << "<?a>";
+  }
+  if( ct.handle)
+    d << ">";
   d << "\" requires " << tu.headerName << ";" << endl;
   //}
   if( !ct.classHierarchyTypeVar.empty()) {
@@ -660,9 +701,9 @@ bool setTypeTemplateVH( const CXXRecordDecl* rd, const ClassContext& ct, Transla
 	    << indent(1) 
 	    << "type " << coltype << " = \"" << coltype << "\" requires " << tu.headerName << ";"
 	    << endl << indent(1)
-	    << "instance type H = handle[" << coltype << "];" << endl
+	    << "instance type H = Standard::handle[" << coltype << "];" << endl
 	    << indent(1)
-	    << "fun createH[A] (a:A) => createHandle[" << coltype << ",A](a);" << endl
+	    << "fun createH[A] (a:A) => Standard::createHandle[" << coltype << ",A](a);" << endl
 	    << "}" << endl;	  
 	  return true;
 	}
@@ -757,9 +798,14 @@ bool trMemberFct( const CXXMethodDecl* m, const ClassContext& ct, TranslationUni
 	name == "get_type_name") return true;
     const QualType rt = m->getReturnType();
     const CXXConversionDecl* cd = dynamic_cast<const CXXConversionDecl*>(m);
+    FType frt_; 
     string frt;
-    if ( !rt->isVoidType() )
-      frt = inClassType( trType( rt, tu.trTypeLog), ct, true, tu);
+    if ( !rt->isVoidType() ) {
+      frt_ = trType( rt, tu.trTypeLog);
+      frt = inClassType( frt_, ct, true, tu);
+    }
+    if ( cd != 0 && frt_.pointer) // conversion operator which returns 
+      return true;                // a pointer is not handled yet
     d << indent(tu.currentIndent);
     if ( cd != 0) d << "ctor "; // conversion operator
     else if ( frt.empty() ) d << "proc ";
@@ -818,6 +864,8 @@ string camelToSpaces( string s) {
 
 
 bool setEnum( const EnumDecl* ed, const ClassContext& ct, TranslationUnit& tu) {
+  if( ed->getAccess() == AS_protected || ed->getAccess() == AS_private )
+    return true;
   //if( ed->hasProtectedVisibility()) return true;
   tu.prTypes.insert( ct.ftype);
   auto& d = *tu.def;
@@ -1151,7 +1199,7 @@ private:
   ClassTranslation& ctr;
   bool first = true;
   set<string> includes;
-  
+  const CXXRecordDecl* rd_=0;
   ClassContext classContext( const string& name) {
     ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.flags( name));
     ct.ctype = name;
@@ -1177,6 +1225,7 @@ public :
   }
 
   virtual void run(const MatchFinder::MatchResult &Result) {
+    //cout << "run()" << endl;
     if( tu->filePath.empty()) {
       clang::SourceManager* sm = Result.SourceManager;
       auto fp = sm->getNonBuiltinFilenameForID( sm->getMainFileID());
@@ -1188,12 +1237,25 @@ public :
 	cout << tu->fileName << endl;
       }      
     }
-    
+    const ClassTemplateDecl *td = Result.Nodes.getNodeAs<clang::ClassTemplateDecl>("templateDecl");
     const CXXRecordDecl *rd = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl");
     const EnumDecl *ed = Result.Nodes.getNodeAs<clang::EnumDecl>("enumDecl");
+    if( td) {
+      rd = td->getTemplatedDecl();
+      rd_ = rd; // 
+    } else if ( rd && rd == rd_ ) { // we already handled this declaration
+      rd_ = 0; 
+      return;
+    }
     if ( rd && rd->isCompleteDefinition() ) {
       tu->setDeclContext( rd->getDeclContext());
       ClassContext ct = classContext( rd->getDeclName().getAsString());
+      if( td) {
+	const TemplateParameterList* tpl = td->getTemplateParameters();
+	for( unsigned i = 0; i < tpl->size(); ++i) {
+	  ct.typeVars.push_back( tpl->getParam(i)->getName().str());
+	}
+      }
       // check if class has base class Standard_Transient
       bool transient = false;
       for (auto b = rd->bases_begin(); b!=rd->bases_end();++b) {
@@ -1238,6 +1300,7 @@ public :
 	//tu->def << tu->eofTypeDef.str();
       }
     } else if ( ed && ed->isCompleteDefinition() ) {
+      //cout << "ENUM" << endl;
       tu->setDeclContext( ed->getDeclContext());
       ClassContext ct = classContext( ed->getNameAsString());
       //tu->currentIndent = 1;
@@ -1541,16 +1604,19 @@ int main(int argc, const char **argv) {
       string::size_type p = i->find_last_of( '_');
       string::size_type q = i->find_last_of( '.');
       string s = ( p != string::npos && q != string::npos ) ? i->substr( p+1, q-p-1) : ".";
+      //cout << s << endl;
       if( ( ( ctr->defaultFlags==0 && ctr->specificFlags.find(s) != ctr->specificFlags.end() )
 	    || ctr->defaultFlags!=0 ) &&
 	  ( ctr->excludeNames.find(s) == ctr->excludeNames.end())) {
 	files.push_back(*i);//[j++] = *i;
+	//cout << "->" << *i << endl;
       }
     }
     ClangTool Tool(cdb, files); 
     ClassWriter Writer(*ctr);
     MatchFinder Finder;
     Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, ClassMatcher), &Writer);
+    Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, TemplateMatcher), &Writer);
     Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, EnumMatcher), &Writer);
     int result = Tool.run(newFrontendActionFactory( &Finder).get());
     if( result != 0) cout << "Error during Tool run" << endl;

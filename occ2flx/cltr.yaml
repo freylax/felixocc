@@ -1,16 +1,20 @@
 ---
 - target:          Collection
   package:         TKMath
-  open:            [ Standard, gp ]
+  open:            [ Standard, gp, TCollection ]
   specific:
     - flags:           [ value, handle, tvar ]
-      names:           [ Array1, Array2, DataMap, List, Sequence ]
+      names:           [ Array1, Array2, DataMap, List, Sequence, Map, Vec2, Vec3, Vec4 ]
+    - flags:           [ value ]
+      names:           [ TListIterator ] 
 - target:          TCollection
   package:         TKernel
   open:            [ Standard ]
   specific:
     - flags:           [ value, ctor, mfct ]
       names:           [ AsciiString, ExtendedString ]
+    - flags:           [ handle, ctor, mfct ]
+      names:           [ HAsciiString ]
 - target:          gp
   package:         TKMath
   open:            [ Standard ]
@@ -38,21 +42,13 @@
   include:         [ GC_Maker, Geom ]
   default:         [ maker, ctor ]
   exclude:         [ Root ]
-- target:          BVH
-  package:         TKMath
-  default:         [ value, ctor, mfct ]
-  specific:
-    - flags:           [ handle, ctor, mfct ]
-      names:           [ BuilderTransient, Builder, TreeBaseTransient, TreeBase,
-                         ObjectTransient, BuildThread, Properties, Transform ]
-  exclude:         [ BinaryTree, SweepPlaneBuilder, QuickSorter, LinearBuilder, Object, Ray, BuildQueue,
-                     IndexedBoxSet ]                       
 - target:          Bnd
   package:         TKMath
   default:         [ value, ctor, mfct ]
   specific:
     - flags:           [ value, handle, tvar ]
       names:           [ HArray1OfBox, HArray1OfBox2d, HArray1OfSphere ]
+  exclude:         [ Tools ]
 - target:          TopAbs
   package:         TKBRep
   default:         [ value ]
@@ -82,34 +78,45 @@
 - target:          OpenGl
   package:         TKOpenGl
   specific:
-    - flags:           [ handle, ctor ]
+    - flags:           [ handle, tvar, ctor ]
       names:           [ GraphicDriver ]
 - target:          V3d
   package:         TKV3d
   specific:
-    - flags:           [ handle, ctor ]
+    - flags:           [ handle, ctor, mfct ]
       names:           [ AmbientLight, DirectionalLight, Viewer ]
 - target:          Quantity
   package:         TKernel
   specific:
     - flags:           [ value, ctor, mfct ]
-      names:           [ Color ]
+      names:           [ Color, ColorRGBA, NameOfColor ]
 - target:          Aspect
   package:         TKService
+  include:         [ XDisplay ]
+  open:            [ XDisplay ] 
   default:         [ value, ctor, mfct ]
   specific:
     - flags:           [ handle, ctor, mfct ]
       names:           [ CircularGrid, DisplayConnection, Grid, NeutralWindow, 
-                         RectangularGrid, VKeySet, Window, 
+                         RectangularGrid, Window, # VKeySet,  
                          XRAction, XRActionSet, XRSession ]
   exclude:         [ AspectFillAreaDefinitionError, AspectLineDefinitionError, 
                      AspectMarkerDefinitionError, DisplayConnectionDefinitionError, 
                      GraphicDeviceDefinitionError, IdentDefinitionError, 
                      WindowDefinitionError, WindowError, XRSession, OpenVRSession,
-                     FrustumLRBT ]
+                     FrustumLRBT, VKeySet, XRActionSet ]
+- target:          Font
+  package:         TKService
+  specific:
+    - flags:           [ value ]
+      names:           [ FontAspect ]
 - target:          Graphic3d
   package:         TKService
   specific:
     - flags:           [ handle, ctor, mfct ]
-      names:           [ Aspects, GraphicDriver, Group, Structure, TypeOfShadingModel ]
+      names:           [ Aspects, Structure, TypeOfShadingModel ] # Group
+    - flags:           [ handle, tvar, ctor, mfct]
+      names:           [ GraphicDriver ]
+    - flags:           [ value, ctor ]
+      names:           [ RenderingParams ]
 ...
