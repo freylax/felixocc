@@ -76,21 +76,22 @@ static llvm::SmallString<256> realOccDir;
 DeclarationMatcher ClassMatcher =
   cxxRecordDecl(isExpansionInMainFile(), hasDefinition()
 		).bind("classDecl");
-DeclarationMatcher TemplateMatcher =
-  classTemplateDecl(isExpansionInMainFile()//, hasDefinition()
-		    ).bind("templateDecl");
+// DeclarationMatcher TemplateMatcher =
+//   classTemplateDecl(isExpansionInMainFile()//, hasDefinition()
+// 		    ).bind("templateDecl");
 DeclarationMatcher EnumMatcher =
   enumDecl(isExpansionInMainFile()//, isPublic() //, hasDefinition()
 	   ).bind("enumDecl");
 
 class FType {
 public:
-  FType(): builtin(false), pointer(false), handle( false), templateClass(false),
+  FType(): flags(0),builtin(false), pointer(false), handle( false), templateClass(false),
 	   integral( false), integralValue( 0) {}
-  FType( int i) : builtin(false), pointer(false), handle( false), templateClass(false),
+  FType( int i) : flags(0),builtin(false), pointer(false), handle( false), templateClass(false),
 		  integral( true), integralValue( i) {}
   string name;
   string inClass;
+  uint32_t flags;
   bool   builtin;
   bool   pointer;
   bool   handle;
@@ -99,7 +100,8 @@ public:
   bool   integral;
   int    integralValue;
   list<FType> typeArgs;
-  string log;
+  string log_;
+  void log( const string& l) { if(!log_.empty()) log_+=","; log_+=l; }
 };
 
 template<class T> string dumpToStr(const T& t) {
@@ -154,6 +156,9 @@ bool translateStandardTypes( FType& t) {
   else if( name == "PCharacter" )
     { t.name = "+char"; t.builtin = true; t.inClass.clear(); }
   else ret = false;
+  if( ret) {
+    t.log("trStandardTypes");
+  }
   return ret;
 }
 
@@ -163,7 +168,7 @@ bool translateTypedefs( const string& name, FType& t) {
   else if( name == "unsigned int" )  t.name = "uint32"; 
   else ret = false;
   if( ret) {
-    // cout << "translateTypedefs( " << name << "," << t.name << ")" << endl;
+    t.log("trTypedef");
     t.builtin = true; t.inClass.clear();
   }
   return ret;
@@ -176,7 +181,7 @@ bool translateBuiltinTypes( const string& name, FType& t) {
   else if( name == "__uint16_t" ) t.name = "uint16";  
   else ret = false;
   if( ret) {
-    // cout << "translateBuiltinTypes( " << name << "," << t.name << ")" << endl;
+    t.log("trBuiltin");
     t.builtin = true; t.inClass.clear();
   }
   return ret;
@@ -192,11 +197,15 @@ string cToFclass( const string& n) {
 //   return n;
 // }
 
+uint32_t& flags( const string& cl, const string& cname);
+
+
 void setClassAndName( const string& n, FType& t) {
   string::size_type p = n.find_first_of( '_');
   if( p != string::npos ) {
     t.inClass = cToFclass( n.substr( 0, p));
     t.name = n.substr( p+1, string::npos);
+    t.flags = flags( t.inClass, n);
   } else {
     t.name = n;
   }
@@ -217,7 +226,6 @@ struct TrFlags {
 
 bool test( uint32_t f, uint32_t mask) { return (f & mask) == mask; }
 
-uint32_t& flags( const string& cl, const string& cname);
 
 bool trTemplate( const QualType& qt, FType& t);
 
@@ -226,46 +234,41 @@ bool trTColName( const string& name, FType& t, string& coltype);
 FType trType( const QualType& qt_) {
   QualType qt = qt_;
   FType t; t.builtin=false; t.pointer=false;
-  //t.log += "[" + qt.getAsString() + "],";
-  // any qualifiers
   if( auto rt = qt->getAs<ReferenceType>()) {
     if( !qt.isLocalConstQualified() ) t.pointer = true; 
     qt = rt->getPointeeTypeAsWritten();
-    t.log += "rt["+ qt.getAsString() + "],";
+    t.log("ref");
   } else if( auto pt = qt->getAsAdjusted<clang::PointerType>()) {
     if( !qt.isLocalConstQualified() ) t.pointer = true; 
     qt = pt->getPointeeType();
-    t.log += "pt["+ qt.getAsString() + "],";
+    t.log("pnt");
   } 
   if( qt.isLocalConstQualified() )
     qt.removeLocalConst();
-  if( qt->isTypedefNameType()){
-    t.log += "td,";
+  if( qt->isTypedefNameType()){    
     setClassAndName( qt.getAsString(), t);
     QualType qt_ = qt->getAs<TypedefType>()->desugar();
+    t.log("tdef(" + qt_.getAsString() + ")" );
     FType u = trType( qt_);
     if( u.inClass == "Collection" && u.templateClass) { // t.inClass.compare( 0,4,"TCol" ) == 0) {
       // this will expand to NCollection ...
-      t.log += t.inClass + ",";
-      bool p = t.pointer; string l = t.log;
-      //t = trType( qt->getAs<TypedefType>()->desugar());
+      t.log( "col");
+      bool p = t.pointer; string l = t.log_;
       t = u;
-      t.pointer = p; t.log = l + t.log;
+      t.pointer = p; t.log_ = l + string(",") + t.log_;
     } else if( t.inClass == "Standard") {
       translateStandardTypes( t);
     } else {
-      t.log += "trtd,";
       string n = qt_.getAsString();
       if( !translateTypedefs( n, t))
 	translateBuiltinTypes( n, t);
     }
   } else if( qt->isBuiltinType() ) {
-    t.log += "bi,";
     if( !translateBuiltinTypes( qt.getAsString(),t)) {
-      t.name = qt.getAsString();     t.builtin = true;
+      t.name = qt.getAsString(); t.builtin = true;
     }
   } else if(auto et = qt->getAs<ElaboratedType>()) {
-    t.log += "el,";
+    t.log( "elaborated");
     if( !trTemplate( qt, t)) {
       //QualType qt_ =  et->getNamedType();
       //cout << qt_.getAsString()<<endl;
@@ -273,20 +276,21 @@ FType trType( const QualType& qt_) {
       //cout << dumpToStr(*(et->getQualifier())) <<endl;
       //}
       //qt_->dump();
-      t.log += "ntempl,";
+      t.log("ntempl");
       t.name = qt.getAsString();
     }
   } else if( qt->isRecordType()) {
-    t.log += "rd,";
     if( !trTemplate( qt, t)) {
+      t.log("record(" + qt.getAsString() + ")" );
       const CXXRecordDecl* crd = qt->getAsCXXRecordDecl();
       string coltype;
       if( !trTColName( crd->getNameAsString(), t, coltype)) {
+	t.log("setClassAndName(" + crd->getNameAsString() + ")");
 	setClassAndName( crd->getNameAsString(), t);
       }
     }
   } else if( qt->isEnumeralType()) {
-    t.log += "en,";
+    t.log("enum");
     string n = qt.getAsString();
     string::size_type p = n.find( "enum ");
     if( p != string::npos ) {
@@ -294,32 +298,35 @@ FType trType( const QualType& qt_) {
     }
     setClassAndName( n, t);
   } else {
-    t.log += string("cl=") + string(qt->getTypeClassName());
+    t.log( string("typeClassName=") + string(qt->getTypeClassName()));
     //qt->dump();
     t.name = qt.getAsString();
-  }
-  if( !t.templateTypeSpec.empty()) {
-    t.log += string(",") + t.templateTypeSpec;
   }
   return t;
 }
 
 bool trTemplate( const QualType& qt, FType& t) {
-  if( auto st = qt->getAs<TemplateSpecializationType>()) {
-    t.log += "ts,";
-    string tn = dumpToStr( st->getTemplateName());
+  t.log("trTemplate(" + string(qt->getTypeClassName()) + ")");
+  const auto rt = qt->getAs<RecordType>();
+  auto cts = dyn_cast<ClassTemplateSpecializationDecl>(rt->getAsRecordDecl());
+  if( cts) {
+    //if( auto tt = qt->getAs<TemplateTypeParmType>()) {
+    //t.log("templateTypeParmType");
+    //} else if
+    //if( auto st = qt->getAs<TemplateSpecializationType>()) {
+    string tn = cts->getNameAsString(); ///dumpToStr( st->getTemplateName());
+    const auto& args = cts->getTemplateArgs(); 
+    t.log("templateSpezDecl(" + tn + ")" );
     if( tn == "handle" ) {
-      auto ct = st->getArg(0).getAsType();
+      auto ct = args[0].getAsType();
       FType p = trType( ct);
-      const uint32_t f = flags( p.inClass, ct.getAsString());
-      if( test( f, TrFlags::handle) && !test( f, TrFlags::value)) {
+      if( test( p.flags, TrFlags::handle) && !test( p.flags, TrFlags::value)) {
 	// these types will always be implemented as handle
-	t.log += "hd,";	
-	t.name = p.name;
-	t.inClass = p.inClass;
+	t.log("handle");	
+	t.name = p.name; t.inClass = p.inClass; t.flags = p.flags;
 	t.handle = true;
-	t.log += p.log;
-      } else if( test( f, TrFlags::handle | TrFlags::value | TrFlags::tvar) ) {
+	t.log( p.log_);
+      } else if( test( p.flags, TrFlags::handle | TrFlags::value) ) {
 	//transient
 	CXXRecordDecl* rd = ct->getAsCXXRecordDecl();
 	if( rd) {
@@ -331,29 +338,28 @@ bool trTemplate( const QualType& qt, FType& t) {
 	      if ( b != rd->bases_end()) {
 		const CXXRecordDecl* rd_ = b->getType()->getAsCXXRecordDecl();
 		if( rd_ && ( rd_->getNameAsString() == "Standard_Transient")) {
-		  FType fta = ft.typeArgs.front();
-		  t.log += "vht,";
+		  t.log( "vht");
 		  t.name = ft.name;
 		  t.inClass = ft.inClass;
 		  t.templateClass = ft.templateClass;
 		  t.templateTypeSpec = "H";
 		  t.typeArgs = ft.typeArgs;
-		  t.log += ft.log;
+		  t.log( ft.log_);
 		}
 	      }
 	    }
 	  }
 	}
       } else if( p.inClass == "Collection") {
-	t.log += "col,";
+	t.log( "col(" + p.name + ")" );
 	t.name = p.name;
 	t.inClass = p.inClass;
 	t.templateClass = p.templateClass;
 	t.templateTypeSpec = p.templateTypeSpec;
 	t.typeArgs = p.typeArgs;
-	t.log += p.log;
+	t.log_ += string(",") + p.log_;
       } else {
-	t.log += "ehd,";
+	t.log( "ehd");
 	t.name = "handle";
 	t.inClass = "Standard";
 	t.templateClass = true;
@@ -362,17 +368,30 @@ bool trTemplate( const QualType& qt, FType& t) {
     } else {
       // no handle
       setClassAndName( tn, t);
-      t.log += "ta,";
-      const auto n = st->getNumArgs();
+      const auto n = args.size(); //st->getNumArgs();
+      string l;
       for( unsigned int i = 0; i<n; ++i) {
-	const auto k = st->getArg(i).getKind();
-	if( k == TemplateArgument::ArgKind::Type ) 
-	  t.typeArgs.push_back( trType( st->getArg(i).getAsType()));
-	else if( k == TemplateArgument::ArgKind::Integral )
-	  t.typeArgs.push_back( FType( static_cast<int>(st->getArg(i).getAsIntegral().getExtValue())));
+	const auto k = args[i].getKind();
+	//if( k == TemplateArgument::ArgKind::Template )
+	//  t.typeArgs.push_back( trType( st->getArg(i).getAsTemplate()));
+	//else
+	if( i > 0) l += ",";
+	if( k == TemplateArgument::ArgKind::Type ) {
+	  QualType a = args[i].getAsType();
+	  l += a.getAsString();
+	  t.typeArgs.push_back( trType( a));
+	  //st->getArg(i).dump( ); cerr << endl;
+	}
+	else if( k == TemplateArgument::ArgKind::Integral ) {
+	  const int integral = static_cast<int>(args[i].getAsIntegral().getExtValue());
+	  l += to_string( integral);
+	  t.typeArgs.push_back( FType( integral));
+	}
       }
+      t.log( "ta(" + l + ")");
       t.templateClass = true;
-      if( t.inClass == "Collection" ) {
+      if( test( t.flags, TrFlags::value | TrFlags::handle)) {
+	// t.inClass == "Collection" ) {
 	t.templateTypeSpec = "V"; // ValueType
       }
     }
@@ -421,6 +440,7 @@ bool trTColName( const string& name, FType& t, string& coltype)
       }
       t.typeArgs.push_back( a);	
     }
+    t.log( "trTColName");
     return true;  
   }
   return false;
@@ -444,7 +464,7 @@ string trTypeLog( const FType& t) {
     }
     l << "]";
   }
-  l << "{" << t.log << "}";
+  l << "{" << t.log_ << "}";
   return l.str();
 }
 
@@ -1199,7 +1219,7 @@ private:
   ClassTranslation& ctr;
   bool first = true;
   set<string> includes;
-  const CXXRecordDecl* rd_=0;
+  //const CXXRecordDecl* rd_=0;
   ClassContext classContext( const string& name) {
     ClassContext ct( ctr.targetClass, ctr.openClasses, ctr.flags( name));
     ct.ctype = name;
@@ -1237,19 +1257,21 @@ public :
 	cout << tu->fileName << endl;
       }      
     }
-    const ClassTemplateDecl *td = Result.Nodes.getNodeAs<clang::ClassTemplateDecl>("templateDecl");
+    //const ClassTemplateDecl *td = Result.Nodes.getNodeAs<clang::ClassTemplateDecl>("templateDecl");
     const CXXRecordDecl *rd = Result.Nodes.getNodeAs<clang::CXXRecordDecl>("classDecl");
     const EnumDecl *ed = Result.Nodes.getNodeAs<clang::EnumDecl>("enumDecl");
-    if( td) {
-      rd = td->getTemplatedDecl();
-      rd_ = rd; // 
-    } else if ( rd && rd == rd_ ) { // we already handled this declaration
-      rd_ = 0; 
-      return;
-    }
-    if ( rd && rd->isCompleteDefinition() ) {
+    //if( td) {
+    //  rd = td->getTemplatedDecl();
+    //  rd_ = rd; // 
+    //} else if ( rd && rd == rd_ ) { // we already handled this declaration
+    //  rd_ = 0; 
+    //  return;
+    //}
+    if ( rd && rd->isCompleteDefinition() && !rd->getDeclName().isEmpty() ) {
+      const ClassTemplateDecl *td = dyn_cast<ClassTemplateDecl>( rd);
       tu->setDeclContext( rd->getDeclContext());
       ClassContext ct = classContext( rd->getDeclName().getAsString());
+      //cout << "rd(" << rd->getDeclName().getAsString() << ")" << endl;
       if( td) {
 	const TemplateParameterList* tpl = td->getTemplateParameters();
 	for( unsigned i = 0; i < tpl->size(); ++i) {
@@ -1299,10 +1321,11 @@ public :
 	}
 	//tu->def << tu->eofTypeDef.str();
       }
-    } else if ( ed && ed->isCompleteDefinition() ) {
+    } else if ( ed && ed->isCompleteDefinition() && !ed->getName().empty() ) {
       //cout << "ENUM" << endl;
       tu->setDeclContext( ed->getDeclContext());
       ClassContext ct = classContext( ed->getNameAsString());
+      //cout << "ed(" << ed->getNameAsString() << ")" << endl;
       //tu->currentIndent = 1;
       setEnum( ed, ct, *tu);
     }
@@ -1616,7 +1639,7 @@ int main(int argc, const char **argv) {
     ClassWriter Writer(*ctr);
     MatchFinder Finder;
     Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, ClassMatcher), &Writer);
-    Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, TemplateMatcher), &Writer);
+    // Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, TemplateMatcher), &Writer);
     Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, EnumMatcher), &Writer);
     int result = Tool.run(newFrontendActionFactory( &Finder).get());
     if( result != 0) cout << "Error during Tool run" << endl;

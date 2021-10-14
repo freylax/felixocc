@@ -6,7 +6,7 @@
     - flags:           [ value, handle, tvar ]
       names:           [ Array1, Array2, DataMap, List, Sequence, Map, Vec2, Vec3, Vec4 ]
     - flags:           [ value ]
-      names:           [ TListIterator ] 
+      names:           [ TListIterator, DefaultHasher ] 
 - target:          TCollection
   package:         TKernel
   open:            [ Standard ]
@@ -84,7 +84,7 @@
   package:         TKV3d
   specific:
     - flags:           [ handle, ctor, mfct ]
-      names:           [ AmbientLight, DirectionalLight, Viewer ]
+      names:           [ AmbientLight, DirectionalLight, View, Viewer ]
 - target:          Quantity
   package:         TKernel
   specific:
@@ -100,6 +100,8 @@
       names:           [ CircularGrid, DisplayConnection, Grid, NeutralWindow, 
                          RectangularGrid, Window, # VKeySet,  
                          XRAction, XRActionSet, XRSession ]
+    - flags:           [ value ]
+      names:           [ RenderingContext ]
   exclude:         [ AspectFillAreaDefinitionError, AspectLineDefinitionError, 
                      AspectMarkerDefinitionError, DisplayConnectionDefinitionError, 
                      GraphicDeviceDefinitionError, IdentDefinitionError, 
@@ -110,13 +112,20 @@
   specific:
     - flags:           [ value ]
       names:           [ FontAspect ]
+- target:          Image
+  package:         TKService
+  default:         [ value ]
+  specific:
+    - flags:           [ handle ]
+      names:           [ PixMapData, PixMapTypedData, Texture, AlienPixMap, CompressedPixMap,
+                         SupportedFormats, PixMap, Diff, VideoRecorder ]
 - target:          Graphic3d
   package:         TKService
   specific:
     - flags:           [ handle, ctor, mfct ]
-      names:           [ Aspects, Structure, TypeOfShadingModel ] # Group
+      names:           [ Structure, TypeOfShadingModel ] # Group
     - flags:           [ handle, tvar, ctor, mfct]
-      names:           [ GraphicDriver ]
+      names:           [ GraphicDriver, CLight, Aspects, AspectMarker3d ]
     - flags:           [ value, ctor ]
-      names:           [ RenderingParams ]
+      names:           [ RenderingParams, Vertex ]
 ...
